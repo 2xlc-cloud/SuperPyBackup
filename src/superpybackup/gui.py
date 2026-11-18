@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, config as cfgmod, engine, fsutil, manifest as mf, restore as restoremod, scheduler, snapshots, updater, winapi
+from . import __version__, config as cfgmod, engine, faq, fsutil, manifest as mf, restore as restoremod, scheduler, snapshots, updater, winapi
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -227,7 +227,8 @@ class App(tk.Tk):
         self.tab_task = ttk.Frame(self.notebook, padding=12)
         self.tab_update = ttk.Frame(self.notebook, padding=12)
         self.tab_log = ttk.Frame(self.notebook, padding=12)
-        for tab, name in ((self.tab_backup, "Sicherung"), (self.tab_settings, "Einstellungen"), (self.tab_restore, "Wiederherstellung"), (self.tab_task, "Aufgabe"), (self.tab_update, "Update"), (self.tab_log, "Protokoll")):
+        self.tab_faq = ttk.Frame(self.notebook, padding=12)
+        for tab, name in ((self.tab_backup, "Sicherung"), (self.tab_settings, "Einstellungen"), (self.tab_restore, "Wiederherstellung"), (self.tab_task, "Aufgabe"), (self.tab_update, "Update"), (self.tab_log, "Protokoll"), (self.tab_faq, "FAQ")):
             self.notebook.add(tab, text=name)
         self._build_backup_tab()
         self._build_settings_tab()
@@ -235,6 +236,7 @@ class App(tk.Tk):
         self._build_task_tab()
         self._build_update_tab()
         self._build_log_tab()
+        self._build_faq_tab()
         self.status = tk.StringVar(value="Bereit.")
         ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w", padding=(8, 3)).pack(fill="x", side="bottom")
 
@@ -464,6 +466,57 @@ class App(tk.Tk):
         self.log_view = self._text_area(tab, 20)
         self.log_view.container.pack(fill="both", expand=True, pady=(8, 0))  # type: ignore[attr-defined]
         self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed)
+
+    def _build_faq_tab(self) -> None:
+        tab = self.tab_faq
+        ttk.Label(tab, text=f"Alle Befehle von {faq.EXE}. Mit „Kopieren“ landet der Befehl in der Zwischenablage; Pfade und Daten bitte anpassen.", style="Sub.TLabel").pack(anchor="w")
+        outer = ttk.Frame(tab)
+        outer.pack(fill="both", expand=True, pady=(8, 0))
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        body = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
+        canvas.bind("<Enter>", lambda event: canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")))
+        canvas.bind("<Leave>", lambda event: canvas.unbind_all("<MouseWheel>"))
+        self.faq_canvas = canvas
+        self.faq_buttons: dict[str, ttk.Button] = {}
+        body.columnconfigure(0, weight=1)
+        row = 0
+        for section, items in faq.SECTIONS:
+            ttk.Label(body, text=section, style="Title.TLabel").grid(row=row, column=0, columnspan=2, sticky="w", pady=(14 if row else 0, 4))
+            row += 1
+            for title, text, arguments in items:
+                command = faq.full_command(arguments)
+                ttk.Label(body, text=title, font=("Segoe UI", 9, "bold")).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+                ttk.Label(body, text=text, style="Sub.TLabel", wraplength=760, justify="left").grid(row=row + 1, column=0, columnspan=2, sticky="w")
+                entry = ttk.Entry(body, font=("Consolas", 9))
+                entry.insert(0, command)
+                entry.configure(state="readonly")
+                entry.grid(row=row + 2, column=0, sticky="ew", pady=(2, 0), padx=(0, 8))
+                button = ttk.Button(body, text="Kopieren", width=10, command=lambda c=command: self.copy_command(c))
+                button.grid(row=row + 2, column=1, pady=(2, 0), padx=(0, 6))
+                self.faq_buttons[command] = button
+                row += 3
+
+    def copy_command(self, command: str) -> None:
+        """Legt den Befehl in die Zwischenablage und bestaetigt es kurz am Knopf und in der Statusleiste."""
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(command)
+            self.update()  # die Zwischenablage bleibt auch nach dem Schliessen des Fensters erhalten
+        except tk.TclError as error:
+            self.set_status(f"Kopieren nicht moeglich: {error}")
+            return
+        self.set_status(f"In die Zwischenablage kopiert: {command}")
+        button = self.faq_buttons.get(command)
+        if button is not None:
+            button.configure(text="Kopiert ✓")
+            self.after(1500, lambda: button.winfo_exists() and button.configure(text="Kopieren"))
 
     # ------------------------------------------------------------------ Hilfen
     def _browse_into(self, variable: tk.StringVar, title: str) -> None:

@@ -104,7 +104,7 @@ def pump(app, seconds=0.3):
 
 def test_window_builds_with_all_tabs_and_no_config(app):
     titles = [app.notebook.tab(tab, "text") for tab in app.notebook.tabs()]
-    assert titles == ["Sicherung", "Einstellungen", "Wiederherstellung", "Aufgabe", "Update", "Protokoll"]
+    assert titles == ["Sicherung", "Einstellungen", "Wiederherstellung", "Aufgabe", "Update", "Protokoll", "FAQ"]
     assert "1.0.0" in app.title()
     assert "nicht festgelegt" in app.summary_vars["target"].get()
     assert app.config is None and "Noch keine Konfiguration" in app.settings_message.cget("text")
@@ -478,3 +478,32 @@ def test_status_colours_follow_theme(app):
     assert app.style.lookup("Bad.TLabel", "foreground") == gui.PALETTES["dark"]["bad"]
     app.toggle_theme()
     assert app.style.lookup("Bad.TLabel", "foreground") == gui.PALETTES["light"]["bad"]
+
+# FAQ ----------------------------------------------------------------------------------------
+def test_faq_examples_are_accepted_by_the_real_command_parser():
+    from superpybackup import cli, faq
+
+    parser = cli.build_parser()
+    examples = faq.all_examples()
+    assert len(examples) >= 25
+    for arguments in examples:
+        parser.parse_args(faq.split_arguments(arguments))  # SystemExit bei einem ungueltigen Beispiel
+    commands = {faq.split_arguments(a)[2 if a.startswith("--config") else 0] for a in examples}
+    assert {"backup", "list", "restore", "verify", "config", "task", "update", "gui"} <= commands
+    actions = {faq.split_arguments(a)[1] for a in examples if a.split()[0] in ("task", "update", "config")}
+    assert {"install", "set", "status", "check", "uninstall", "rollback", "init", "show", "validate"} <= actions
+
+
+def test_faq_tab_copies_commands_to_the_clipboard(app):
+    from superpybackup import faq
+
+    window = app
+    assert "FAQ" in [window.notebook.tab(i, "text") for i in range(window.notebook.index("end"))]
+    assert len(window.faq_buttons) == len(faq.all_examples())
+    command = faq.full_command("backup --new-snapshot")
+    window.faq_buttons[command].invoke()
+    window.update()
+    assert window.clipboard_get() == command
+    assert "kopiert" in window.status.get().lower()
+    window.apply_theme("light")
+    window.apply_theme("dark")

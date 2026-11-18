@@ -61,6 +61,7 @@ Die Sicherungsstände im Ziel werden dabei **nie** gelöscht.
 | **Aufgabe** | Windows-Aufgabe einrichten/ändern (Verzögerung, tägliche Uhrzeit), prüfen, Status, entfernen |
 | **Update** | Auf Updates prüfen; Installation erst nach Bestätigung; Vorversion wiederherstellen |
 | **Protokoll** | Protokolldateien anzeigen, Ordner öffnen |
+| **FAQ** | Alle Konsolenbefehle (`SuperPyBackupCmd.exe …`) mit kurzer Erklärung und Beispiel; **Kopieren** legt den Befehl in die Zwischenablage. Die Beispiele werden im Test mit dem echten Befehlsparser geprüft |
 
 ## Befehle
 

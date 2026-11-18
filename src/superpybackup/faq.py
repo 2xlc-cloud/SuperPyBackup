@@ -1,0 +1,72 @@
+"""Inhalt des FAQ-Reiters: alle Konsolenbefehle mit kurzer Erklärung und kopierbarem Beispiel.
+
+Die Beispiele sind Argumente für SuperPyBackupCmd.exe; ein Test prüft, dass jedes Beispiel vom echten Befehlsparser akzeptiert wird.
+"""
+
+from __future__ import annotations
+
+import shlex
+
+EXE = "SuperPyBackupCmd.exe"
+
+# (Abschnitt, [(Titel, Erklärung, Argumente), ...])
+SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
+    ("Allgemein", [
+        ("Version anzeigen", "Zeigt die installierte Version.", "--version"),
+        ("Andere Konfigurationsdatei verwenden", "Die Option --config steht immer vor dem Befehl und gilt für alle Befehle.", '--config "D:\\Sicherung\\config.json" backup'),
+        ("Oberfläche öffnen", "Startet diese grafische Oberfläche. SuperPyBackup.exe ohne Argumente macht dasselbe.", "gui"),
+    ]),
+    ("Konfiguration", [
+        ("Konfiguration anlegen", "Erzeugt eine config.json mit Standardwerten und dem angegebenen Sicherungsziel.", 'config init --backup-root "D:\\Sicherung"'),
+        ("Konfiguration anzeigen", "Gibt die aktuell gueltige Konfiguration aus.", "config show"),
+        ("Konfiguration prüfen", "Prüft alle Einstellungen und nennt jeden Fehler einzeln. Rückgabewert 0 bedeutet gueltig.", "config validate"),
+    ]),
+    ("Sicherung", [
+        ("Sicherung starten", "Legt den Tagesstand an. Gibt es heute schon einen vollständigen Stand, passiert nichts (AlreadyComplete).", "backup"),
+        ("Weiteren Stand anlegen", "Erzwingt einen zusätzlichen Stand, auch wenn heute schon einer existiert.", "backup --new-snapshot"),
+        ("Ohne Ausgabe", "Für geplante Aufgaben: keine Konsolenausgabe, Ergebnis nur im Protokoll und im Rückgabewert (0 = vollstaendig, 2 = Teil-Stand, 1 = Fehler).", "backup --quiet"),
+    ]),
+    ("Stände ansehen und prüfen", [
+        ("Stände auflisten", "Zeigt alle Stände (Daily, Monthly, Yearly) mit Datum, Größe und Status.", "list"),
+        ("Als JSON auflisten", "Maschinenlesbare Ausgabe, z. B. für Skripte.", "list --json"),
+        ("Neuesten Stand prüfen", "Vergleicht alle gesicherten Dateien mit den SHA-256-Werten im Manifest.", "verify"),
+        ("Bestimmten Stand prüfen", "Snapshot: latest, daily/JJJJ-MM-TT, monthly/JJJJ-MM, yearly/JJJJ oder ein Pfad.", "verify --snapshot daily/2026-11-18"),
+    ]),
+    ("Wiederherstellung", [
+        ("Alles in einen Ordner", "Stellt den neuesten Stand in einen Zielordner wieder her (ein Unterordner je Kategorie). Vorhandene Dateien bleiben unberührt.", 'restore --snapshot latest --dest "D:\\Wiederherstellung"'),
+        ("Nur eine Kategorie", "Kategorien: Desktop, Documents, Pictures, Music, Videos, Downloads, Favorites. Die Option darf mehrfach stehen.", 'restore --snapshot latest --category Documents --dest "D:\\Wiederherstellung"'),
+        ("Nur eine Datei oder einen Ordner", "Pfad relativ zum Stand, Kategorie zuerst. Die Option darf mehrfach stehen.", 'restore --path Documents/Projekt/a.txt --dest "D:\\Wiederherstellung"'),
+        ("Aus einem älteren Stand", "Wählt einen bestimmten Tages-, Monats- oder Jahresstand.", 'restore --snapshot monthly/2026-10 --dest "D:\\Wiederherstellung"'),
+        ("An den ursprünglichen Ort", "Schreibt die Dateien dorthin zurück, wo sie gesichert wurden. Vorhandene Dateien werden nicht überschrieben.", "restore --snapshot latest --original"),
+        ("Vorhandene Dateien ersetzen", "Mit --overwrite werden vorhandene Dateien ersetzt; --yes beantwortet die Sicherheitsfrage vorab. Nur gezielt einsetzen.", "restore --snapshot latest --original --overwrite --yes"),
+    ]),
+    ("Windows-Aufgabe", [
+        ("Aufgabe einrichten", "Legt die versteckte Aufgabe an: Start 2 Minuten nach der Anmeldung, ohne Administratorrechte.", "task install"),
+        ("Andere Wartezeit", "Wartezeit in Minuten nach der Anmeldung.", "task install --delay 5"),
+        ("Zusätzlich täglich", "Startet die Sicherung zusätzlich jeden Tag zur angegebenen Uhrzeit (HH:MM).", "task install --daily-at 20:00"),
+        ("Aufgabe ändern", "Aktualisiert eine vorhandene Aufgabe mit neuen Werten.", "task set --delay 3 --daily-at 12:30"),
+        ("Eigener Aufgabenname", "Der Name muss mit SuperPyBackup beginnen; fremde Aufgaben werden nie angefasst.", "task install --name SuperPyBackup-Test"),
+        ("Aufgabe anzeigen", "Zeigt, ob die Aufgabe existiert, wann sie zuletzt lief und was sie startet.", "task status"),
+        ("Aufgabe prüfen", "Prüft, ob die Aufgabe richtig eingerichtet ist (Programm, Benutzer, Versteckt, Mehrfachstart).", "task check"),
+        ("Aufgabe entfernen", "Löscht die Aufgabe. Bereits gesicherte Stände bleiben erhalten.", "task uninstall"),
+    ]),
+    ("Update", [
+        ("Nach Update suchen", "Fragt GitHub nach der neuesten Version. Es wird nichts heruntergeladen.", "update check"),
+        ("Update installieren", "Lädt nach Rückfrage die neuen Programmdateien, prüft SHA-256 und tauscht sie aus.", "update install"),
+        ("Ohne Rückfrage installieren", "Wie oben, die Bestätigung wird vorab erteilt.", "update install --yes"),
+        ("Update zurücknehmen", "Stellt die vorherige Programmversion wieder her.", "update rollback"),
+    ]),
+]
+
+
+def full_command(arguments: str) -> str:
+    return f"{EXE} {arguments}"
+
+
+def all_examples() -> list[str]:
+    return [arguments for _, items in SECTIONS for _, _, arguments in items]
+
+
+def split_arguments(arguments: str) -> list[str]:
+    """Zerlegt ein Beispiel in Argumente (nur für Tests; Backslashes werden dafür durch / ersetzt)."""
+    return shlex.split(arguments.replace("\\", "/"))
