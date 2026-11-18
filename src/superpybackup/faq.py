@@ -49,6 +49,9 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("Auch Teil-Stände entfernen", "Entfernt zusätzlich Stände mit Status Partial (Sicherung mit Dateifehlern).", "cleanup --partial --dry-run"),
         ("Protokolle behalten", "Lässt alte Protokolldateien aus.", "cleanup --skip-logs"),
     ]),
+    ("Desktop-Meldungen", [
+        ("Testmeldung anzeigen", "Zeigt eine Meldung auf dem Desktop und nennt, ob Meldungen in der Konfiguration eingeschaltet sind (notifications.enabled, Standard: aus). Eingeschaltet melden Sicherung, Update und Fehler, auch bei der geplanten Aufgabe.", "notify-test"),
+    ]),
     ("Windows-Aufgabe", [
         ("Aufgabe einrichten", "Legt die versteckte Aufgabe an: Start 2 Minuten nach der Anmeldung, ohne Administratorrechte.", "task install"),
         ("Andere Wartezeit", "Wartezeit in Minuten nach der Anmeldung.", "task install --delay 5"),

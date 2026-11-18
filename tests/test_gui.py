@@ -535,3 +535,24 @@ def test_cleanup_button_previews_asks_and_deletes(app, env):
     app.wait_idle(30)
     pump(app)
     assert any(call[0] == "info" and "nichts zu bereinigen" in call[2].lower() for call in app.dialogs.calls)
+
+
+def test_notification_and_full_settings_roundtrip_and_test_button(app, env, monkeypatch):
+    from superpybackup import notify
+
+    app.var_target.set(str(env.dst))
+    app.var_notify.set(True)
+    app.var_notify_success.set(False)
+    app.var_full_days.set("3")
+    assert app.save_settings() is True
+    saved = json.loads((env.root / "config.json").read_text(encoding="utf-8"))
+    assert saved["notifications"] == {"enabled": True, "on_success": False, "on_update": True, "on_error": True}
+    assert saved["backup"]["full_every_days"] == 3
+    app.var_notify.set(False)
+    app.load_config()
+    assert app.var_notify.get() is True and app.var_notify_success.get() is False and app.var_full_days.get() == "3"
+    shown = []
+    monkeypatch.setattr(notify, "show", lambda title, message: shown.append((title, message)) or True)
+    app.test_notification()
+    pump(app, 1.0)
+    assert len(shown) == 1

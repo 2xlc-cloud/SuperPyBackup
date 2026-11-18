@@ -8,6 +8,7 @@ voneinander installier- und betreibbar; SuperPyBackup verändert SuperPSBackup n
 * Sicherung nach `Desktop`, `Dokumente`, `Bilder`, `Musik`, `Videos`, `Downloads`, `Favoriten` (Windows-Known-Folders, inkl. Umleitung/OneDrive) plus eigene Ordner
 * Normale Dateien im Ziel (kein Archivformat): Jeder Stand ist ein Ordner, den man im Explorer öffnen kann
 * Unveränderte Dateien werden per NTFS-Hardlink wiederverwendet – nur Neues/Geändertes belegt Speicher (**Inkrement**)
+* Einschaltbare **Desktop-Meldungen** (Windows-Toast) bei abgeschlossener Sicherung, neuer Version/Update und Fehlern – auch wenn die Sicherung als geplante Aufgabe unsichtbar läuft
 * Zusätzlich **Vollsicherungen**: alle Dateien werden neu kopiert, der Stand ist eigenständig und hängt an keinem Vorgänger – automatisch alle 7 Tage (einstellbar) oder auf Wunsch
 * Aufbewahrung 7 Tage / 12 Monate / 5 Jahre, Wiederherstellung (Datei, Ordner, ursprünglicher Ort), Windows-Aufgabe, GitHub-Update
 
@@ -68,6 +69,7 @@ Die Sicherungsstände im Ziel werden dabei **nie** gelöscht.
 
 | Befehl | Wirkung |
 |---|---|
+| `notify-test` | Testmeldung auf dem Desktop anzeigen und den Schaltzustand nennen |
 | `backup [--full \| --incremental] [--new-snapshot] [--quiet]` | Sicherung ausführen. `--full` erzwingt eine eigenständige Vollsicherung (legt auch bei vorhandenem Tagesstand einen weiteren Stand an), `--incremental` ein Inkrement; ohne Option entscheidet `backup.full_every_days`. Exit-Code 0 = vollständig/bereits vorhanden/anderer Lauf aktiv, **2 = Teil-Stand**, 1 = Fehler |
 | `list [--json]` | Alle Stände mit Datum, Status (Complete/Partial/Defekt), Dateizahl, Größe |
 | `restore --dest ZIEL \| --original [--snapshot S] [--category K] [--path P] [--overwrite [--yes]]` | Wiederherstellung (siehe unten) |
@@ -101,6 +103,7 @@ Globale Option: `--config PFAD` (Standard `%LOCALAPPDATA%\SuperPyBackup\config.j
   },
   "logging": { "directory": "", "keep_days": 30, "max_file_mb": 20 },   // leer = %LOCALAPPDATA%\SuperPyBackup\Logs
   "update": { "check_for_updates": true, "check_interval_hours": 24, "repository": "2xlc-cloud/SuperPyBackup", "api_url": "https://api.github.com" },
+  "notifications": { "enabled": false, "on_success": true, "on_update": true, "on_error": true },   // Desktop-Meldungen (Standard: aus); die drei weiteren Schalter wählen die Ereignisse
   "gui": { "theme": "dark" }                  // "dark" (Standard) oder "light"
 }
 ```

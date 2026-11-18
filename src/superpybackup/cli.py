@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, restore as restoremod, scheduler, snapshots, updater
+from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, notify as notifymod, restore as restoremod, scheduler, snapshots, updater
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -56,15 +56,27 @@ def cmd_backup(args: argparse.Namespace) -> int:
             print("Art: " + ("Vollsicherung" if result.kind == engine.FULL else "Inkrement"))
         print(f"Gescannt {stats.scanned} | neu {stats.new} | geaendert {stats.modified} | unveraendert {stats.unchanged} | ausgelassen {stats.skipped} | Fehler {stats.errors}")
         print(f"Uebertragen {_human(stats.bytes_transferred)} | Gesamt {_human(stats.total_bytes)} | zusaetzlicher Speicher {_human(stats.extra_storage_bytes)} | {result.seconds:.1f} s")
+    message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""))
+    if message:
+        notifymod.notify(config.notifications, *message, log=_safe_log(config))
     if result.status != engine.BUSY:
         try:
             log = _log(config, quiet=True)
             info = updater.periodic_check(config, log)
+            if info:
+                notifymod.notify(config.notifications, notifymod.UPDATE, "Neue Version von SuperPyBackup", f"Version {info.version} ist verfuegbar (installiert: {__version__}). Installation: SuperPyBackupCmd update install", log)
             if info and not args.quiet:
                 print(f"Neue Version verfuegbar: {info.version}. Installation mit 'update install'.")
         except Exception:  # noqa: BLE001 - die Update-Pruefung darf einen Lauf nie beeintraechtigen
             pass
     return result.exit_code
+
+
+def _safe_log(config: cfgmod.Config) -> RunLog | None:
+    try:
+        return _log(config, quiet=True)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -234,6 +246,17 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     return 1 if result.failed else 0
 
 
+def cmd_notify_test(args: argparse.Namespace) -> int:
+    config = cfgmod.load(args.config, require_target=False)
+    state = "eingeschaltet" if config.notifications["enabled"] else "AUSGESCHALTET (notifications.enabled)"
+    print(f"Desktop-Meldungen sind in der Konfiguration {state}.")
+    if notifymod.show("SuperPyBackup", "Testmeldung: Desktop-Meldungen funktionieren."):
+        print("Testmeldung abgesetzt.")
+        return 0
+    print("Die Testmeldung konnte nicht angezeigt werden.", file=sys.stderr)
+    return 1
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import main_gui
 
@@ -261,6 +284,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
         names = updater.install_update(info, _install_dir(), config.update, confirm=confirm, log=_log(config, quiet=True))
         print(f"Aktualisiert auf {info.version}: {', '.join(names)}")
+        notifymod.notify(config.notifications, notifymod.UPDATE, "SuperPyBackup aktualisiert", f"Version {info.version} ist installiert.", _safe_log(config))
         return 0
     except updater.UpdateError as error:
         print(f"Update: {error}", file=sys.stderr)
@@ -326,6 +350,9 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--skip-logs", action="store_true", help="alte Protokolle nicht entfernen")
     cleanup.set_defaults(func=cmd_cleanup)
 
+    notify_test = sub.add_parser("notify-test", help="Testmeldung auf dem Desktop anzeigen")
+    notify_test.set_defaults(func=cmd_notify_test)
+
     gui = sub.add_parser("gui", help="Grafische Oberflaeche oeffnen (ohne Argumente startet SuperPyBackup.exe ebenfalls die Oberflaeche)")
     gui.set_defaults(func=cmd_gui)
     return parser
@@ -367,6 +394,8 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
         print(str(error), file=sys.stderr)
+        if args.command == "backup":
+            notifymod.notify_from_file(args.config, notifymod.ERROR, "Sicherung nicht gestartet", str(error).splitlines()[0][:300])
         try:
             folder = Path(cfgmod.app_home()) / "Logs"
             folder.mkdir(parents=True, exist_ok=True)
@@ -380,6 +409,8 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as error:  # noqa: BLE001 - letzte Sicherung: auch ohne Konsole nachvollziehbar protokollieren
         _crash_log(error)
+        if args.command == "backup":
+            notifymod.notify_from_file(args.config, notifymod.ERROR, "Sicherung abgebrochen", f"Unerwarteter Fehler: {error}"[:300])
         print(f"Unerwarteter Fehler: {error} (Details in {cfgmod.app_home() / 'Logs' / 'crash.log'})", file=sys.stderr)
         return 1
 

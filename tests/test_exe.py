@@ -216,3 +216,12 @@ def test_exe_full_and_incremental_backup(env):
     full = run_exe(CMD_EXE, env, "backup", "--full")
     assert full.returncode == 0 and "Art: Vollsicherung" in full.stdout
     assert run_exe(CMD_EXE, env, "backup", "--full", "--incremental").returncode != 0
+
+
+def test_exe_notifications_use_the_capture_hook(env, tmp_path):
+    write_tree(env.src, {"a.txt": "a"})
+    env.write_config_file(notifications={"enabled": True})
+    sink = tmp_path / "meldungen.jsonl"
+    result = subprocess.run([str(CMD_EXE), "--config", str(env.root / "config.json"), "backup", "--quiet"], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                            env=dict(clean_env(env), SUPERPYBACKUP_NOTIFY_FILE=str(sink)))
+    assert result.returncode == 0 and "Sicherung abgeschlossen" in sink.read_text(encoding="utf-8")

@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, restore as restoremod, scheduler, snapshots, updater, winapi
+from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, notify as notifymod, restore as restoremod, scheduler, snapshots, updater, winapi
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -372,16 +372,27 @@ class App(tk.Tk):
         ttk.Spinbox(box, from_=1, to=3650, width=7, textvariable=self.var_log_days).grid(row=1, column=1, sticky="w", padx=8)
         self.var_check_updates = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="Regelmäßig auf neue Versionen prüfen (lädt nie ohne Bestätigung etwas herunter)", variable=self.var_check_updates).grid(row=2, column=0, columnspan=3, sticky="w")
+        # Desktop-Meldungen
+        box = ttk.LabelFrame(body, text="Desktop-Meldungen", padding=10)
+        box.grid(row=6, column=0, sticky="ew", **pad)
+        self.var_notify = tk.BooleanVar(value=False)
+        self.var_notify_success, self.var_notify_update, self.var_notify_error = tk.BooleanVar(value=True), tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        ttk.Checkbutton(box, text="Desktop-Meldungen einschalten (gilt auch für die geplante Aufgabe)", variable=self.var_notify).grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Checkbutton(box, text="Sicherung abgeschlossen", variable=self.var_notify_success).grid(row=1, column=0, sticky="w", padx=(18, 8))
+        ttk.Checkbutton(box, text="Neue Version / Update", variable=self.var_notify_update).grid(row=1, column=1, sticky="w", padx=8)
+        ttk.Checkbutton(box, text="Fehler", variable=self.var_notify_error).grid(row=1, column=2, sticky="w", padx=8)
+        self.btn_notify_test = ttk.Button(box, text="Testmeldung", command=self.test_notification)
+        self.btn_notify_test.grid(row=1, column=3, sticky="e", padx=8)
         # Schaltflächen
         actions = ttk.Frame(body)
-        actions.grid(row=6, column=0, sticky="ew", padx=12, pady=(8, 14))
+        actions.grid(row=7, column=0, sticky="ew", padx=12, pady=(8, 14))
         self.btn_save = ttk.Button(actions, text="Speichern", style="Big.TButton", command=self.save_settings)
         self.btn_save.pack(side="left")
         ttk.Button(actions, text="Zurücksetzen (aus Datei laden)", command=self.load_config).pack(side="left", padx=8)
         self.settings_path_label = ttk.Label(actions, text="", style="Sub.TLabel")
         self.settings_path_label.pack(side="left", padx=8)
         self.settings_message = ttk.Label(body, text="", wraplength=860, justify="left")
-        self.settings_message.grid(row=7, column=0, sticky="w", padx=12, pady=(0, 12))
+        self.settings_message.grid(row=8, column=0, sticky="w", padx=12, pady=(0, 12))
 
     def _build_restore_tab(self) -> None:
         tab = self.tab_restore
@@ -650,6 +661,10 @@ class App(tk.Tk):
         self.var_log_dir.set(data["logging"]["directory"])
         self.var_log_days.set(str(data["logging"]["keep_days"]))
         self.var_check_updates.set(data["update"]["check_for_updates"])
+        self.var_notify.set(data["notifications"]["enabled"])
+        self.var_notify_success.set(data["notifications"]["on_success"])
+        self.var_notify_update.set(data["notifications"]["on_update"])
+        self.var_notify_error.set(data["notifications"]["on_error"])
 
     def collect_settings(self) -> dict[str, Any]:
         data = copy.deepcopy(self.config_data)
@@ -674,6 +689,7 @@ class App(tk.Tk):
         data["logging"]["directory"] = self.var_log_dir.get().strip()
         data["logging"]["keep_days"] = number(self.var_log_days, "Protokolle behalten (Tage)")
         data["update"]["check_for_updates"] = self.var_check_updates.get()
+        data["notifications"] = {"enabled": self.var_notify.get(), "on_success": self.var_notify_success.get(), "on_update": self.var_notify_update.get(), "on_error": self.var_notify_error.get()}
         return data
 
     def save_settings(self) -> bool:
@@ -818,6 +834,19 @@ class App(tk.Tk):
         self.set_status(text.splitlines()[0])
         self.snapshot_refs = {}
         self.refresh_summary()
+
+    def test_notification(self) -> None:
+        """Zeigt unabhaengig von den Einstellungen eine Testmeldung, damit man sieht, ob Windows sie anzeigt."""
+        self.set_status("Testmeldung wird gesendet ...")
+
+        def done(shown: bool | None, error: BaseException | None) -> None:
+            if error or not shown:
+                self.error("Testmeldung", "Die Meldung konnte nicht angezeigt werden. Bitte die Windows-Einstellung \"Benachrichtigungen\" und den Fokus-Assistenten prüfen.")
+                self.set_status("Testmeldung nicht angezeigt.")
+            else:
+                self.set_status("Testmeldung gesendet.")
+
+        self.run_async(lambda: notifymod.show("SuperPyBackup", "Testmeldung: Desktop-Meldungen funktionieren."), done)
 
     def start_cleanup(self) -> None:
         """Bereinigung: erst Vorschau (nichts wird geloescht), dann Rueckfrage, dann Loeschen unter der Sicherungssperre."""

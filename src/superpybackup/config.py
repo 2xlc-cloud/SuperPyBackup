@@ -65,6 +65,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "logging": {"directory": "", "keep_days": 30, "max_file_mb": 20},
     "gui": {"theme": "dark"},
+    "notifications": {"enabled": False, "on_success": True, "on_update": True, "on_error": True},
     "update": {
         "check_for_updates": True,
         "check_interval_hours": 24,
@@ -99,6 +100,10 @@ class Config:
     @property
     def backup(self) -> dict[str, Any]:
         return self.data["backup"]
+
+    @property
+    def notifications(self) -> dict[str, Any]:
+        return self.data["notifications"]
 
     @property
     def update(self) -> dict[str, Any]:
@@ -223,6 +228,9 @@ def validate(data: dict[str, Any], *, require_target: bool = True) -> list[Sourc
     _int(logging_cfg["max_file_mb"], "logging.max_file_mb", 1, 1024, problems)
     if data["gui"]["theme"] not in THEMES:
         problems.append(f"'gui.theme' muss {' oder '.join(THEMES)} sein (gefunden: {data['gui']['theme']!r}).")
+    for key, value in data["notifications"].items():
+        if not isinstance(value, bool):
+            problems.append(f"'notifications.{key}' muss true oder false sein.")
     update = data["update"]
     if not isinstance(update["check_for_updates"], bool):
         problems.append("'update.check_for_updates' muss true oder false sein.")
