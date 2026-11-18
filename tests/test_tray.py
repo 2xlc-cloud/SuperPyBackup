@@ -32,7 +32,7 @@ def test_icon_is_opaque_inside_and_transparent_in_the_corner():
 
 def _body_color(state: str) -> tuple[int, int, int]:
     pixels = icon.render(64, state)
-    offset = (int(64 * 0.30) * 64 + int(64 * 0.20)) * 4  # Gehaeuse links neben dem Pfeil
+    offset = (int(64 * 0.25) * 64 + int(64 * 0.12)) * 4  # Gehaeuse links oben, ausserhalb der Scheibe
     assert pixels[offset + 3] == 255
     return pixels[offset], pixels[offset + 1], pixels[offset + 2]
 
