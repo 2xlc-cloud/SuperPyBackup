@@ -105,7 +105,7 @@ def pump(app, seconds=0.3):
 def test_window_builds_with_all_tabs_and_no_config(app):
     titles = [app.notebook.tab(tab, "text") for tab in app.notebook.tabs()]
     assert titles == ["Sicherung", "Einstellungen", "Wiederherstellung", "Aufgabe", "Update", "Protokoll", "FAQ"]
-    assert "1.0.0" in app.title()
+    assert __import__("superpybackup").__version__ in app.title()
     assert "nicht festgelegt" in app.summary_vars["target"].get()
     assert app.config is None and "Noch keine Konfiguration" in app.settings_message.cget("text")
 
