@@ -110,3 +110,9 @@ def daily_names(env: Env) -> list[str]:
 
 def tier_names(env: Env, tier: str) -> list[str]:
     return sorted(ref.name for ref in snapshots.list_snapshots(str(env.target), env.identity.sid, (tier,)))
+
+
+@pytest.fixture(autouse=True)
+def _never_show_real_notifications(tmp_path, monkeypatch):
+    """Meldungen landen in einer Datei statt auf dem Desktop (einzelne Tests ueberschreiben das bewusst)."""
+    monkeypatch.setenv("SUPERPYBACKUP_NOTIFY_FILE", str(tmp_path / "unbeachtet.jsonl"))

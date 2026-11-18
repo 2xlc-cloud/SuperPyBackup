@@ -99,6 +99,7 @@ def test_unloadable_config_is_still_reported(env, tmp_path):
 
 
 def test_new_version_found_by_periodic_check_is_reported(env, captured, monkeypatch):
+    monkeypatch.setenv("SUPERPYBACKUP_HOME", str(env.home))
     write_tree(env.src, {"a.txt": "x"})
     env.write_config_file(notifications={"enabled": True, "on_success": False})
     info = updater.UpdateInfo(version="9.9.9", tag="v9.9.9", assets={}, page="")
@@ -135,3 +136,44 @@ def test_sender_name_is_registered_per_user_and_idempotent():
         except OSError:
             pass
     assert notify.APP_ID == "SuperPyBackup.Desktop" and notify.APP_NAME == "SuperPyBackup"
+
+
+# ---- geplante Updatepruefung (update check --quiet) ----------------------------------------------
+def _quiet_check(env, monkeypatch, info):
+    monkeypatch.setenv("SUPERPYBACKUP_HOME", str(env.home))
+    monkeypatch.setattr(updater, "check_for_update", lambda settings, *a, **k: info)
+    return cli.main(["--config", str(env.root / "config.json"), "update", "check", "--quiet"])
+
+
+def test_quiet_update_check_notifies_once_per_version(env, captured, monkeypatch, capsys):
+    env.write_config_file(notifications={"enabled": True})
+    info = updater.UpdateInfo(version="9.9.9", tag="v9.9.9", assets={}, page="")
+    assert _quiet_check(env, monkeypatch, info) == 0
+    assert _quiet_check(env, monkeypatch, info) == 0  # dieselbe Version: keine zweite Meldung
+    assert [m["title"] for m in captured()] == ["Neue Version von SuperPyBackup"]
+    newer = updater.UpdateInfo(version="10.0.0", tag="v10.0.0", assets={}, page="")
+    assert _quiet_check(env, monkeypatch, newer) == 0
+    assert len(captured()) == 2
+    assert capsys.readouterr().out == ""  # still
+
+
+def test_quiet_update_check_is_silent_when_current_or_disabled(env, captured, monkeypatch):
+    env.write_config_file(notifications={"enabled": True})
+    assert _quiet_check(env, monkeypatch, None) == 0 and captured() == []
+    env.write_config_file()  # Meldungen aus
+    info = updater.UpdateInfo(version="9.9.9", tag="v9.9.9", assets={}, page="")
+    assert _quiet_check(env, monkeypatch, info) == 0 and captured() == []
+    assert "Updatepruefung: neue Version 9.9.9" in next((env.home / "Logs").glob("*.log")).read_text(encoding="utf-8")
+
+
+def test_quiet_update_check_failure_is_logged_not_shown(env, captured, monkeypatch):
+    env.write_config_file(notifications={"enabled": True})
+
+    def fail(settings, *a, **k):
+        raise updater.UpdateError("offline")
+
+    monkeypatch.setenv("SUPERPYBACKUP_HOME", str(env.home))
+    monkeypatch.setattr(updater, "check_for_update", fail)
+    assert cli.main(["--config", str(env.root / "config.json"), "update", "check", "--quiet"]) == 1
+    assert captured() == []
+    assert "Updatepruefung nicht moeglich: offline" in next((env.home / "Logs").glob("*.log")).read_text(encoding="utf-8")

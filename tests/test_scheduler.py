@@ -111,3 +111,15 @@ def test_cli_refuses_task_install_with_invalid_config(env, task_name):
     (env.root / "config.json").write_text('{"backup_root": ""}', encoding="utf-8")
     result = env.cli("task", "install", "--name", task_name)
     assert result.returncode != 0 and scheduler.status(task_name)["exists"] is False
+
+
+def test_update_task_helpers_and_description():
+    assert scheduler.update_task_name("SuperPyBackup-S-1-5-21-1") == "SuperPyBackup-S-1-5-21-1-Update"
+    scheduler.validate_name(scheduler.update_task_name("SuperPyBackup-S-1-5-21-1"))
+    _, arguments = scheduler.program_command("C:\\a\\config.json", "update check --quiet")
+    assert arguments.endswith('--config "C:\\a\\config.json" update check --quiet') or arguments.endswith('update check --quiet')
+    xml = scheduler.build_xml("C:\\x\\SuperPyBackup.exe", "update check --quiet", "S-1-5-21-1-2-3-1001", daily_at="12:00", description="Pruefung & Meldung")
+    root = ET.fromstring(xml.split("?>", 1)[1])
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    assert root.find(".//t:RegistrationInfo/t:Description", ns).text == "Pruefung & Meldung"
+    assert root.find(".//t:Exec/t:Arguments", ns).text == "update check --quiet" and root.find(".//t:CalendarTrigger", ns) is not None

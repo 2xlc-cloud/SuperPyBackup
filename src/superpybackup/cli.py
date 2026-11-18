@@ -64,12 +64,20 @@ def cmd_backup(args: argparse.Namespace) -> int:
             log = _log(config, quiet=True)
             info = updater.periodic_check(config, log)
             if info:
-                notifymod.notify(config.notifications, notifymod.UPDATE, "Neue Version von SuperPyBackup", f"Version {info.version} ist verfuegbar (installiert: {__version__}). Installation: SuperPyBackupCmd update install", log)
+                _notify_new_version(config, info, log)
             if info and not args.quiet:
                 print(f"Neue Version verfuegbar: {info.version}. Installation mit 'update install'.")
         except Exception:  # noqa: BLE001 - die Update-Pruefung darf einen Lauf nie beeintraechtigen
             pass
     return result.exit_code
+
+
+def _notify_new_version(config: cfgmod.Config, info: updater.UpdateInfo, log: RunLog | None) -> None:
+    """Desktop-Meldung zu einer neuen Version, hoechstens einmal je Version."""
+    if updater.already_notified(info.version):
+        return
+    if notifymod.notify(config.notifications, notifymod.UPDATE, "Neue Version von SuperPyBackup", f"Version {info.version} ist verfuegbar (installiert: {__version__}). Installation: SuperPyBackupCmd update install", log):
+        updater.remember_notified(info.version)
 
 
 def _safe_log(config: cfgmod.Config) -> RunLog | None:
@@ -270,6 +278,16 @@ def cmd_update(args: argparse.Namespace) -> int:
             print("Wiederhergestellt: " + ", ".join(updater.rollback(_install_dir())))
             return 0
         info = updater.check_for_update(config.update)
+        if args.quiet:  # geplante Pruefung: still, nur Desktop-Meldung bei neuer Version und Eintrag im Protokoll
+            log = _safe_log(config)
+            if info is None:
+                if log:
+                    log.info(f"Updatepruefung: SuperPyBackup {__version__} ist aktuell.")
+                return 0
+            if log:
+                log.info(f"Updatepruefung: neue Version {info.version} verfuegbar (installiert {__version__}).")
+            _notify_new_version(config, info, log)
+            return 0
         if info is None:
             print(f"SuperPyBackup {__version__} ist aktuell.")
             return 0
@@ -288,6 +306,10 @@ def cmd_update(args: argparse.Namespace) -> int:
         return 0
     except updater.UpdateError as error:
         print(f"Update: {error}", file=sys.stderr)
+        if args.quiet:
+            log = _safe_log(config)
+            if log:
+                log.warn(f"Updatepruefung nicht moeglich: {error}")
         return 1
 
 
@@ -341,6 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     update = sub.add_parser("update", help="Updates pruefen/installieren")
     update.add_argument("action", choices=["check", "install", "rollback"])
     update.add_argument("--yes", action="store_true", help="Installation ohne Rueckfrage bestaetigen")
+    update.add_argument("--quiet", action="store_true", help="nur mit check: keine Ausgabe (fuer die geplante Aufgabe); meldet eine neue Version per Desktop-Meldung")
     update.set_defaults(func=cmd_update)
 
     cleanup = sub.add_parser("cleanup", help="Sicherungsziel bereinigen (Reste, abgelaufene Staende, alte Protokolle)")

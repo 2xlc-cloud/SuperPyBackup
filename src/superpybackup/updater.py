@@ -144,6 +144,26 @@ def periodic_check(config: cfgmod.Config, log: RunLog, fetch: Callable[[str, int
     return info
 
 
+def _notified_path() -> Path:
+    return cfgmod.app_home() / "update-notified.json"
+
+
+def already_notified(version: str) -> bool:
+    """Wurde fuer diese Version schon eine Desktop-Meldung gezeigt? (Damit die geplante Pruefung nicht taeglich dasselbe meldet.)"""
+    try:
+        return json.loads(_notified_path().read_text(encoding="utf-8")).get("version") == version
+    except (OSError, ValueError):
+        return False
+
+
+def remember_notified(version: str) -> None:
+    try:
+        _notified_path().parent.mkdir(parents=True, exist_ok=True)
+        fsutil.atomic_write_json(str(_notified_path()), {"version": version})
+    except OSError:
+        pass
+
+
 def parse_sums(text: str) -> dict[str, str]:
     sums: dict[str, str] = {}
     for line in text.splitlines():

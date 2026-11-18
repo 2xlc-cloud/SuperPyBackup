@@ -34,21 +34,29 @@ def validate_name(name: str) -> str:
     return name
 
 
-def program_command(config_path: str | None) -> tuple[str, str]:
+def update_task_name(task_name: str) -> str:
+    """Name der Aufgabe fuer die Updatepruefung, abgeleitet vom Namen der Sicherungsaufgabe."""
+    return task_name + "-Update"
+
+
+def program_command(config_path: str | None, command_line: str = "backup --quiet") -> tuple[str, str]:
     """Programm und Argumente fuer den geplanten Lauf. Bevorzugt die konsolenlose SuperPyBackup.exe."""
     config_arg = f'--config "{config_path}" ' if config_path else ""
     if getattr(sys, "frozen", False):
         executable = Path(sys.executable)
         windowed = executable.with_name("SuperPyBackup.exe")
         program = windowed if windowed.is_file() else executable
-        return str(program), f"{config_arg}backup --quiet"
+        return str(program), f"{config_arg}{command_line}"
     python = Path(sys.executable)
     pythonw = python.with_name("pythonw.exe")
     program = pythonw if pythonw.is_file() else python
-    return str(program), f"-m superpybackup {config_arg}backup --quiet"
+    return str(program), f"-m superpybackup {config_arg}{command_line}"
 
 
-def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None) -> str:
+DESCRIPTION = "SuperPyBackup: versionierte Sicherung der persoenlichen Benutzerordner."
+
+
+def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None, description: str = DESCRIPTION) -> str:
     if not 0 <= delay_minutes <= 60:
         raise SchedulerError("Die Verzoegerung muss zwischen 0 und 60 Minuten liegen.")
     daily = ""
@@ -61,7 +69,7 @@ def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2,
         daily = f"<CalendarTrigger><StartBoundary>{boundary}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>"
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>SuperPyBackup: versionierte Sicherung der persoenlichen Benutzerordner.</Description></RegistrationInfo>
+  <RegistrationInfo><Description>{escape(description)}</Description></RegistrationInfo>
   <Triggers><LogonTrigger><Enabled>true</Enabled><Delay>PT{delay_minutes}M</Delay><UserId>{escape(sid)}</UserId></LogonTrigger>{daily}</Triggers>
   <Principals><Principal id="User"><UserId>{escape(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings>
@@ -90,10 +98,10 @@ def _decode(data: bytes) -> str:
     return data.decode("latin-1")
 
 
-def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None) -> str:
+def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None, description: str = DESCRIPTION) -> str:
     """Legt die Aufgabe an oder aktualisiert sie (idempotent). Aufgaben anderer Namen bleiben unberuehrt."""
     validate_name(name)
-    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at)
+    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at, description=description)
     with tempfile.TemporaryDirectory(prefix="superpybackup-task-") as folder:
         path = os.path.join(folder, "task.xml")
         with open(path, "wb") as handle:

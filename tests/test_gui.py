@@ -74,6 +74,7 @@ def app(env):
         pass
     try:
         scheduler.uninstall(application.task_name)
+        scheduler.uninstall(application.update_task_name)
     except scheduler.SchedulerError:
         pass
     application._closing = True
@@ -556,3 +557,78 @@ def test_notification_and_full_settings_roundtrip_and_test_button(app, env, monk
     app.test_notification()
     pump(app, 1.0)
     assert len(shown) == 1
+
+
+def test_update_task_install_status_and_remove(app, env):
+    configure(app, env)
+    app.var_upd_delay.set("6")
+    app.var_upd_daily_on.set(True)
+    app.var_upd_daily_at.set("11:30")
+    app.btn_update_task_install.invoke()
+    assert [c for c in app.dialogs.kinds("info") if "ausgeschaltet" in c[2]]  # Hinweis: Meldungen sind noch aus
+    info = scheduler.status(app.update_task_name)
+    assert info["exists"] and info["delay_minutes"] == 6 and info["daily_at"] == "11:30" and info["hidden"] and info["run_level"] == "LeastPrivilege"
+    assert info["arguments"].endswith("update check --quiet") and scheduler.status(app.task_name)["exists"] is False  # eigene Aufgabe, Sicherungsaufgabe unberuehrt
+    app.refresh_update_task()
+    app.wait_idle(30)
+    assert app.update_task_name in app.task_text.get("1.0", "end") and "Täglich: 11:30" in app.task_text.get("1.0", "end")
+    app.remove_update_task()
+    assert scheduler.status(app.update_task_name)["exists"] is False
+
+
+def test_update_task_rejects_invalid_input_and_missing_config(app, env):
+    app.btn_update_task_install.invoke()  # keine Konfiguration
+    assert app.dialogs.kinds("fehler") and scheduler.status(app.update_task_name)["exists"] is False
+    configure(app, env)
+    app.dialogs.calls.clear()
+    app.var_upd_daily_at.set("25:99")
+    app.btn_update_task_install.invoke()
+    assert app.dialogs.kinds("fehler") and scheduler.status(app.update_task_name)["exists"] is False
+
+
+def test_gui_actions_send_desktop_notifications(app, env, monkeypatch):
+    from superpybackup import notify
+
+    shown = []
+    monkeypatch.setattr(notify, "show", lambda title, message: shown.append(title) or True)
+    write_tree(env.src, {"a.txt": "inhalt"})
+    configure(app, env, notifications={"enabled": True})
+    app.start_backup(False)
+    app.wait_idle(60)
+    pump(app, 0.8)
+    assert shown == ["Sicherung abgeschlossen"]
+    app.start_backup(False)  # heute schon gesichert: wird in der Oberflaeche ausdruecklich gemeldet
+    app.wait_idle(60)
+    pump(app, 0.8)
+    assert shown[-1] == "Heute bereits gesichert"
+    # ausgeschaltet oder Ereignis abgewaehlt: keine Meldung
+    configure(app, env, notifications={"enabled": True, "on_success": False})
+    before = len(shown)
+    app.start_backup(True)
+    app.wait_idle(60)
+    pump(app, 0.8)
+    assert len(shown) == before
+    configure(app, env)
+    app.start_backup(True)
+    app.wait_idle(60)
+    pump(app, 0.8)
+    assert len(shown) == before
+
+
+def test_gui_update_check_and_verify_notify(app, env, monkeypatch):
+    from superpybackup import notify, updater
+
+    shown = []
+    monkeypatch.setattr(notify, "show", lambda title, message: shown.append(title) or True)
+    configure(app, env, notifications={"enabled": True})
+    info = updater.UpdateInfo(version="9.9.9", tag="v9.9.9", assets={}, page="")
+    monkeypatch.setattr(updater, "check_for_update", lambda settings, *a, **k: info)
+    app.check_update()
+    app.wait_idle(30)
+    pump(app, 0.8)
+    assert shown == ["Neue Version von SuperPyBackup"]
+    monkeypatch.setattr(updater, "check_for_update", lambda settings, *a, **k: None)
+    app.check_update()
+    app.wait_idle(30)
+    pump(app, 0.8)
+    assert shown[-1] == "Keine neue Version"

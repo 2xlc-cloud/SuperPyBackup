@@ -50,6 +50,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("Protokolle behalten", "Lässt alte Protokolldateien aus.", "cleanup --skip-logs"),
     ]),
     ("Desktop-Meldungen", [
+        ("Updateprüfung für die Aufgabe", "Stille Prüfung für die geplante Aufgabe (Reiter Aufgabe in der Oberfläche richtet sie ein): meldet eine neue Version einmal per Desktop-Meldung und schreibt das Ergebnis ins Protokoll.", "update check --quiet"),
         ("Testmeldung anzeigen", "Zeigt eine Meldung auf dem Desktop und nennt, ob Meldungen in der Konfiguration eingeschaltet sind (notifications.enabled, Standard: aus). Eingeschaltet melden Sicherung, Update und Fehler, auch bei der geplanten Aufgabe.", "notify-test"),
     ]),
     ("Windows-Aufgabe", [

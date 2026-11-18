@@ -88,6 +88,7 @@ class App(tk.Tk):
             self.withdraw()
         self.config_path = Path(config_path) if config_path else cfgmod.default_config_path()
         self.task_name = task_name or scheduler.default_task_name()
+        self.update_task_name = scheduler.update_task_name(self.task_name)
         self.config_data: dict[str, Any] = cfgmod.template("")
         self.config: cfgmod.Config | None = None
         self.messages: queue.Queue = queue.Queue()
@@ -456,6 +457,20 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Status aktualisieren", command=self.refresh_task).pack(side="left")
         ttk.Button(buttons, text="Aufgabe entfernen", command=self.remove_task).pack(side="left", padx=8)
         ttk.Label(tab, text="Die Aufgabe läuft im Benutzerkontext ohne Administratorrechte, ohne sichtbares Fenster, nie parallel, und sichert höchstens einmal pro Tag.", style="Sub.TLabel", wraplength=860).pack(anchor="w", pady=8)
+        box = ttk.LabelFrame(tab, text="Updateprüfung (Meldung bei neuer Version)", padding=8)
+        box.pack(fill="x", pady=(0, 8))
+        self.var_upd_delay = tk.StringVar(value="5")
+        self.var_upd_daily_on = tk.BooleanVar(value=True)
+        self.var_upd_daily_at = tk.StringVar(value="12:00")
+        ttk.Label(box, text="Start nach der Anmeldung (Minuten):").grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(box, from_=0, to=60, width=6, textvariable=self.var_upd_delay).grid(row=0, column=1, padx=8, sticky="w")
+        ttk.Checkbutton(box, text="Zusätzlich täglich um (HH:MM):", variable=self.var_upd_daily_on).grid(row=0, column=2, padx=(18, 0), sticky="w")
+        ttk.Entry(box, textvariable=self.var_upd_daily_at, width=8).grid(row=0, column=3, padx=8, sticky="w")
+        self.btn_update_task_install = ttk.Button(box, text="Prüfaufgabe einrichten / ändern", command=self.install_update_task)
+        self.btn_update_task_install.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(box, text="Status", command=self.refresh_update_task).grid(row=1, column=2, sticky="w", padx=(18, 0), pady=(8, 0))
+        ttk.Button(box, text="Entfernen", command=self.remove_update_task).grid(row=1, column=3, sticky="w", padx=8, pady=(8, 0))
+        ttk.Label(box, text="Die Aufgabe prüft still auf neue Versionen und meldet sie einmal je Version per Desktop-Meldung (unter Einstellungen einschalten). Es wird nie etwas installiert.", style="Sub.TLabel", wraplength=860).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self.task_text = self._text_area(tab, 12)
         self.task_text.container.pack(fill="both", expand=True)  # type: ignore[attr-defined]
 
@@ -815,6 +830,7 @@ class App(tk.Tk):
         if error or result is None:
             self.result_label.configure(text=f"Fehler: {error}", style="Bad.TLabel")
             self.set_status("Sicherung fehlgeschlagen.")
+            self.notify(notifymod.ERROR, "Sicherung fehlgeschlagen", str(error or "Unbekannter Fehler"))
             return
         self.last_result = result
         stats = result.stats
@@ -832,8 +848,24 @@ class App(tk.Tk):
         text += f"\nNeu {stats.new}, geändert {stats.modified}, unverändert {stats.unchanged}, ausgelassen {stats.skipped}, Fehler {stats.errors} | übertragen {_human(stats.bytes_transferred)}, gesamt {_human(stats.total_bytes)} | {result.seconds:.1f} s"
         self.result_label.configure(text=text, style="Ok.TLabel" if result.status in (engine.COMPLETE, engine.ALREADY) else "Bad.TLabel" if result.status in (engine.FAILED, engine.PARTIAL) else "TLabel")
         self.set_status(text.splitlines()[0])
+        message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""))
+        if message:
+            self.notify(*message)
+        elif result.status == engine.ALREADY:
+            self.notify(notifymod.SUCCESS, "Heute bereits gesichert", "Es war kein neuer Stand nötig.")
+        elif result.status == engine.BUSY:
+            self.notify(notifymod.ERROR, "Sicherung nicht gestartet", "Es läuft bereits eine andere Sicherung.")
         self.snapshot_refs = {}
         self.refresh_summary()
+
+    def notify(self, event: str, title: str, message: str) -> None:
+        """Desktop-Meldung zu einer Aktion in der Oberfläche; nur wenn in der gespeicherten Konfiguration eingeschaltet. Läuft im Hintergrund."""
+        try:
+            settings = cfgmod.load(self.config_path, require_target=False).notifications if self.config_path.is_file() else None
+        except cfgmod.ConfigError:
+            settings = None
+        if notifymod.enabled_for(settings, event):
+            threading.Thread(target=notifymod.show, args=(title, message), daemon=True).start()
 
     def test_notification(self) -> None:
         """Zeigt unabhaengig von den Einstellungen eine Testmeldung, damit man sieht, ob Windows sie anzeigt."""
@@ -889,12 +921,14 @@ class App(tk.Tk):
             if error:
                 self.error("Bereinigung nicht möglich", str(error))
                 self.set_status("Bereinigung nicht möglich.")
+                self.notify(notifymod.ERROR, "Bereinigung nicht möglich", str(error))
                 return
             text = f"Bereinigung: {len(result.removed)} entfernt, {len(result.failed)} fehlgeschlagen."
             if result.failed:
                 details = "\n".join(f"{item.label}: {reason}" for item, reason in result.failed[:8])
                 self.error("Bereinigung", text + "\n\n" + details)
             self.set_status(text)
+            self.notify(notifymod.ERROR if result.failed else notifymod.SUCCESS, "Bereinigung abgeschlossen" if not result.failed else "Bereinigung mit Fehlern", text)
             self.refresh_summary()
 
         self.run_async(lambda: cleanupmod.build_plan(config, options), planned, op=True)
@@ -1027,11 +1061,13 @@ class App(tk.Tk):
                 self._append(self.restore_log, f"FEHLER: {error}\n")
                 self.error("Wiederherstellung fehlgeschlagen", str(error))
                 self.set_status("Wiederherstellung fehlgeschlagen.")
+                self.notify(notifymod.ERROR, "Wiederherstellung fehlgeschlagen", str(error))
                 return
             self.last_restore = result
             summary = f"Wiederhergestellt: {result.copied} Dateien ({_human(result.bytes)}), ausgelassen: {result.skipped}, Fehler: {result.errors}"
             self._append(self.restore_log, summary + "\n")
             self.set_status(summary)
+            self.notify(notifymod.ERROR if result.errors else notifymod.SUCCESS, "Wiederherstellung abgeschlossen" if not result.errors else "Wiederherstellung mit Fehlern", summary)
 
         self.run_async(work, done, op=True)
 
@@ -1051,11 +1087,13 @@ class App(tk.Tk):
             self._set_busy_state(False)
             if error:
                 self.error("Prüfung nicht möglich", str(error))
+                self.notify(notifymod.ERROR, "Prüfung nicht möglich", str(error))
                 return
             checked, bad = result
             text = f"{ref.spec}: {checked} Dateien geprüft, {len(bad)} fehlerhaft" + ("" if not bad else ": " + ", ".join(bad[:5]))
             self._append(self.restore_log, text + "\n")
             self.set_status(text)
+            self.notify(notifymod.ERROR if bad else notifymod.SUCCESS, "Prüfung mit Fehlern" if bad else "Prüfung erfolgreich", text)
 
         self.run_async(lambda: restoremod.verify_snapshot(ref.path, log, sid), done, op=True)
 
@@ -1117,6 +1155,48 @@ class App(tk.Tk):
         self.set_status("Aufgabe entfernt." if removed else "Keine Aufgabe vorhanden.")
         self.refresh_summary()
 
+    # ---- Aufgabe fuer die Updatepruefung
+    def install_update_task(self) -> None:
+        try:
+            try:
+                delay = int(self.var_upd_delay.get())
+            except ValueError as error:
+                raise scheduler.SchedulerError("Die Verzögerung muss eine ganze Zahl sein.") from error
+            daily = self.var_upd_daily_at.get().strip() if self.var_upd_daily_on.get() else None
+            config = cfgmod.load(self.config_path, require_target=False)
+            program, arguments = scheduler.program_command(str(self.config_path), "update check --quiet")
+            scheduler.install(self.update_task_name, program, arguments, delay_minutes=delay, daily_at=daily, description="SuperPyBackup: stille Pruefung auf neue Versionen mit Desktop-Meldung.")
+        except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
+            self.error("Prüfaufgabe nicht eingerichtet", str(error))
+            return
+        self.set_status("Prüfaufgabe eingerichtet.")
+        self._append(self.task_text, f"Eingerichtet: {self.update_task_name}\nProgramm: {program} {arguments}\n", clear=True)
+        if not (config.notifications["enabled"] and config.notifications["on_update"]):
+            self.info("Prüfaufgabe eingerichtet", "Die Meldungen bei neuen Versionen sind noch ausgeschaltet. Bitte unter Einstellungen → Desktop-Meldungen „Desktop-Meldungen einschalten“ und „Neue Version / Update“ aktivieren und speichern.")
+
+    def refresh_update_task(self) -> None:
+        def done(info: dict | None, error: BaseException | None) -> None:
+            if error:
+                self._append(self.task_text, f"Fehler: {error}\n", clear=True)
+            elif not info["exists"]:
+                self._append(self.task_text, f"Die Aufgabe {self.update_task_name} ist nicht eingerichtet.\n", clear=True)
+            else:
+                lines = [f"Aufgabe: {info['name']}", f"Aktiv: {'ja' if info['enabled'] else 'NEIN'}", f"Start nach Anmeldung: {info['delay_minutes']} Min.", f"Täglich: {info['daily_at'] or 'nein'}", f"Programm: {info['command']}", f"Argumente: {info['arguments']}"]
+                self._append(self.task_text, "\n".join(lines) + "\n", clear=True)
+
+        self.run_async(lambda: scheduler.status(self.update_task_name), done)
+
+    def remove_update_task(self) -> None:
+        if not self.ask_yes_no("Prüfaufgabe entfernen", "Die Windows-Aufgabe für die Updateprüfung entfernen?"):
+            return
+        try:
+            removed = scheduler.uninstall(self.update_task_name)
+        except scheduler.SchedulerError as error:
+            self.error("Prüfaufgabe nicht entfernt", str(error))
+            return
+        self._append(self.task_text, "Prüfaufgabe entfernt.\n" if removed else "Die Prüfaufgabe war nicht eingerichtet.\n", clear=True)
+        self.set_status("Prüfaufgabe entfernt." if removed else "Keine Prüfaufgabe vorhanden.")
+
     # ------------------------------------------------------------------ Update
     def check_update(self) -> None:
         try:
@@ -1130,15 +1210,18 @@ class App(tk.Tk):
         def done(info: updater.UpdateInfo | None, error: BaseException | None) -> None:
             if error:
                 self.update_label.configure(text=f"Prüfung nicht möglich: {error}", style="Bad.TLabel")
+                self.notify(notifymod.ERROR, "Updateprüfung nicht möglich", str(error))
                 self.btn_update_install.configure(state="disabled")
                 return
             self.last_update = info
             if info is None:
                 self.update_label.configure(text=f"SuperPyBackup {__version__} ist aktuell.", style="Ok.TLabel")
+                self.notify(notifymod.UPDATE, "Keine neue Version", f"SuperPyBackup {__version__} ist aktuell.")
                 self.btn_update_install.configure(state="disabled")
             else:
                 self.update_label.configure(text=f"Neue Version verfügbar: {info.version} (installiert: {__version__}).  {info.page}", style="TLabel")
                 self.btn_update_install.configure(state="normal")
+                self.notify(notifymod.UPDATE, "Neue Version von SuperPyBackup", f"Version {info.version} ist verfügbar (installiert: {__version__}).")
 
         self.run_async(lambda: updater.check_for_update(update_settings), done)
 
@@ -1162,7 +1245,9 @@ class App(tk.Tk):
         def done(names: list[str] | None, error: BaseException | None) -> None:
             if error:
                 self.update_label.configure(text=f"Update nicht installiert (bestehende Installation unverändert): {error}", style="Bad.TLabel")
+                self.notify(notifymod.ERROR, "Update nicht installiert", str(error))
                 return
+            self.notify(notifymod.UPDATE, "SuperPyBackup aktualisiert", f"Version {info.version} ist installiert. Bitte neu starten.")
             self.update_label.configure(text=f"Version {info.version} installiert ({', '.join(names)}). Bitte das Programm neu starten.", style="Ok.TLabel")
             self.btn_update_install.configure(state="disabled")
             self.info("Update installiert", "Das Update wurde installiert. Bitte starten Sie SuperPyBackup neu.")
@@ -1179,6 +1264,7 @@ class App(tk.Tk):
             self.error("Update", str(error))
             return
         self.update_label.configure(text="Vorversion wiederhergestellt: " + ", ".join(restored), style="Ok.TLabel")
+        self.notify(notifymod.UPDATE, "Vorversion wiederhergestellt", ", ".join(restored))
 
     # ------------------------------------------------------------------ Protokoll
     def _log_dir(self) -> str:
