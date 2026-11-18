@@ -146,6 +146,8 @@ class TrayIcon:
         self.items: list[MenuItem | None] = list(items or [])  # None = Trennlinie
         self.hwnd = 0
         self._hicon = 0
+        self._hicons: dict[str, int] = {}  # je Zustand ein Symbol (blau/orange/rot)
+        self.state = icon.IDLE
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._ok = False
@@ -162,11 +164,24 @@ class TrayIcon:
             user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
         if self._thread:
             self._thread.join(3)
-        if self._hicon:
-            user32.DestroyIcon(self._hicon)
-            self._hicon = 0
+        for handle in self._hicons.values():
+            user32.DestroyIcon(handle)
+        self._hicons.clear()
+        self._hicon = 0
 
     # ---- Einstellungen
+    def _icon_for(self, state: str) -> int:
+        if state not in self._hicons:
+            self._hicons[state] = icon.create_hicon(icon.small_icon_size(), state)
+        return self._hicons[state]
+
+    def set_state(self, state: str) -> None:
+        """Faerbt das Symbol um: icon.IDLE (blau), icon.BUSY (orange), icon.ERROR (rot)."""
+        self.state = state
+        if self._ok and self.hwnd:
+            self._hicon = self._icon_for(state)
+            shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(self._data()))
+
     def set_tooltip(self, text: str) -> None:
         self.tooltip = text
         if self._ok and self.hwnd:
@@ -197,7 +212,7 @@ class TrayIcon:
         try:
             if not _register_class():
                 return
-            self._hicon = icon.create_hicon(32)
+            self._hicon = self._icon_for(self.state)
             self.hwnd = user32.CreateWindowExW(0, CLASS_NAME, "SuperPyBackup", 0, 0, 0, 0, 0, None, None, kernel32.GetModuleHandleW(None), None) or 0
             if not self.hwnd:
                 return

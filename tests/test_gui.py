@@ -645,12 +645,16 @@ class FakeTray:
         self.items = []
         self.tooltip = ""
         self.stopped = False
+        self.states = []
 
     def set_items(self, items):
         self.items = items
 
     def set_tooltip(self, text):
         self.tooltip = text
+
+    def set_state(self, state):
+        self.states.append(state)
 
     def stop(self):
         self.stopped = True
@@ -754,3 +758,47 @@ def test_tray_events_from_another_thread_reach_the_window(app, monkeypatch):
     threading.Thread(target=app._tray_events.put, args=("open",)).start()
     pump(app, 0.5)
     assert shown == ["show"]
+
+
+def test_icon_turns_orange_while_working_and_red_after_a_failed_backup(app, env, monkeypatch):
+    import shutil
+
+    with_tray(app, monkeypatch)
+    write_tree(env.src, {"a.txt": "inhalt"})
+    configure(app, env)
+    assert app._icon_state == "idle"
+    app.start_backup(False)
+    assert app._icon_state == "busy" and app.tray.states[-1] == "busy"  # sofort beim Start
+    app.wait_idle(60)
+    assert app._icon_state == "idle" and app.tray.states == ["busy", "idle"]
+    shutil.rmtree(env.src)  # Quelle verschwindet: naechster Lauf scheitert
+    app.start_backup(True)
+    app.wait_idle(60)
+    assert app.last_result.status == engine.FAILED and app._icon_state == "error" and app.tray.states[-1] == "error"
+    write_tree(env.src, {"a.txt": "wieder da"})
+    app.start_backup(True)
+    assert app._icon_state == "busy"
+    app.wait_idle(60)
+    assert app._icon_state == "idle"  # Fehlerfarbe verschwindet nach erfolgreichem Lauf
+
+
+def test_window_icon_follows_the_state_without_tray(app, env):
+    configure(app, env)
+    write_tree(env.src, {"a.txt": "x"})
+    app.start_backup(False)
+    assert app._icon_state == "busy" and "busy" in app._icon_images
+    app.wait_idle(60)
+    assert app._icon_state == "idle"
+
+
+def test_desktop_shortcut_buttons_create_and_remove(app, env):
+    from superpybackup import shortcut
+
+    configure(app, env)
+    assert not shortcut.exists() and str(app.btn_shortcut_remove.cget("state")) == "disabled"
+    app.btn_shortcut_create.invoke()
+    app.wait_idle(60)
+    assert shortcut.exists() and "vorhanden" in app.shortcut_label.cget("text") and str(app.btn_shortcut_remove.cget("state")) == "normal"
+    assert str(env.root / "config.json") in shortcut.read()[1]
+    app.btn_shortcut_remove.invoke()
+    assert not shortcut.exists() and str(app.btn_shortcut_remove.cget("state")) == "disabled"

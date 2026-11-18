@@ -116,3 +116,11 @@ def tier_names(env: Env, tier: str) -> list[str]:
 def _never_show_real_notifications(tmp_path, monkeypatch):
     """Meldungen landen in einer Datei statt auf dem Desktop (einzelne Tests ueberschreiben das bewusst)."""
     monkeypatch.setenv("SUPERPYBACKUP_NOTIFY_FILE", str(tmp_path / "unbeachtet.jsonl"))
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_desktop(tmp_path, monkeypatch):
+    """Desktop-Verknuepfungen entstehen in Tests in einem Temp-Ordner, nie auf dem echten Desktop."""
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    monkeypatch.setenv("SUPERPYBACKUP_DESKTOP", str(desktop))

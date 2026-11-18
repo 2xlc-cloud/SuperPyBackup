@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, notify as notifymod, restore as restoremod, scheduler, snapshots, updater
+from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, updater
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -265,6 +265,22 @@ def cmd_notify_test(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_shortcut(args: argparse.Namespace) -> int:
+    try:
+        if args.action == "create":
+            config_path = args.config or str(cfgmod.default_config_path())
+            print(f"Verknuepfung angelegt: {shortcutmod.create(config_path)}")
+        elif args.action == "remove":
+            print("Verknuepfung entfernt." if shortcutmod.remove() else "Es war keine Verknuepfung vorhanden.")
+        else:
+            current = shortcutmod.read()
+            print("Keine Verknuepfung auf dem Desktop." if current is None else f"Verknuepfung: {shortcutmod.link_path()}\nZiel: {current[0]} {current[1]}")
+        return 0
+    except shortcutmod.ShortcutError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import main_gui
 
@@ -375,6 +391,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     notify_test = sub.add_parser("notify-test", help="Testmeldung auf dem Desktop anzeigen")
     notify_test.set_defaults(func=cmd_notify_test)
+
+    shortcut = sub.add_parser("shortcut", help="Verknuepfung auf dem Desktop anlegen/entfernen/anzeigen")
+    shortcut.add_argument("action", choices=["create", "remove", "status"])
+    shortcut.set_defaults(func=cmd_shortcut)
 
     gui = sub.add_parser("gui", help="Grafische Oberflaeche oeffnen (ohne Argumente startet SuperPyBackup.exe ebenfalls die Oberflaeche)")
     gui.add_argument("--tray", action="store_true", help="nur als Symbol im Infobereich starten (Autostart); ohne Konfiguration wird das Fenster gezeigt")

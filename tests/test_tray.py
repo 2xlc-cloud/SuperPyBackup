@@ -30,6 +30,21 @@ def test_icon_is_opaque_inside_and_transparent_in_the_corner():
     assert pixels[middle + 3] == 255
 
 
+def _body_color(state: str) -> tuple[int, int, int]:
+    pixels = icon.render(64, state)
+    offset = (int(64 * 0.30) * 64 + int(64 * 0.20)) * 4  # Gehaeuse links neben dem Pfeil
+    assert pixels[offset + 3] == 255
+    return pixels[offset], pixels[offset + 1], pixels[offset + 2]
+
+
+def test_state_colors_are_blue_orange_and_red():
+    idle, busy, error = (_body_color(s) for s in (icon.IDLE, icon.BUSY, icon.ERROR))
+    assert idle[2] > idle[0] and idle[2] > 150  # blau
+    assert busy[0] > 200 and busy[0] > busy[2] + 80 and busy[1] > busy[2]  # orange
+    assert error[0] > 180 and error[0] > error[1] + 80 and error[0] > error[2] + 80  # rot
+    assert len({idle, busy, error}) == 3
+
+
 def test_hicon_can_be_created_and_freed():
     handle = icon.create_hicon(32)
     assert handle
@@ -102,6 +117,14 @@ def test_tray_tooltip_and_menu_can_be_changed_while_running(live_tray):
     icon_.set_items([tray.MenuItem("nur", "Einziger Eintrag")])
     tray.user32.PostMessageW(icon_.hwnd, tray.WM_MENU_COMMAND, 0, 0)
     assert wait_for(lambda: events == ["nur"]) and icon_.tooltip == "Sicherung laeuft ..."
+
+
+def test_tray_icon_changes_color_state(live_tray):
+    icon_, _ = live_tray
+    for state in (icon.BUSY, icon.ERROR, icon.IDLE, icon.BUSY):
+        icon_.set_state(state)
+        assert icon_.state == state and icon_._hicon == icon_._hicons[state] and icon_._hicon
+    assert len(icon_._hicons) == 3 and len(set(icon_._hicons.values())) == 3  # je Zustand ein eigenes Symbol, wiederverwendet
 
 
 def test_second_instance_can_find_the_running_one(live_tray):

@@ -293,3 +293,14 @@ def test_exe_tray_start_is_hidden_and_a_second_start_reopens_it(env):
             time.sleep(0.5)
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
         process.wait(timeout=30)
+
+
+def test_exe_desktop_shortcut_create_and_remove(env, tmp_path):
+    desktop = tmp_path / "exe-desktop"
+    desktop.mkdir()
+    env.write_config_file()
+    variables = clean_env(env, SUPERPYBACKUP_DESKTOP=str(desktop))
+    created = subprocess.run([str(CMD_EXE), "--config", str(env.root / "config.json"), "shortcut", "create"], env=variables, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    assert created.returncode == 0 and (desktop / "SuperPyBackup.lnk").is_file(), created.stdout + created.stderr
+    removed = subprocess.run([str(CMD_EXE), "shortcut", "remove"], env=variables, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    assert removed.returncode == 0 and not (desktop / "SuperPyBackup.lnk").exists()

@@ -49,6 +49,10 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("Auch Teil-Stände entfernen", "Entfernt zusätzlich Stände mit Status Partial (Sicherung mit Dateifehlern).", "cleanup --partial --dry-run"),
         ("Protokolle behalten", "Lässt alte Protokolldateien aus.", "cleanup --skip-logs"),
     ]),
+    ("Desktop-Verknüpfung", [
+        ("Verknüpfung anlegen", "Legt auf dem Desktop eine Verknüpfung „SuperPyBackup“ an, die die Oberfläche öffnet (auch in der Oberfläche unter Einstellungen → Start und Infobereich).", "shortcut create"),
+        ("Verknüpfung entfernen", "Entfernt nur diese Verknüpfung vom Desktop; andere Dateien bleiben unberührt.", "shortcut remove"),
+    ]),
     ("Infobereich", [
         ("Nur im Infobereich starten", "Startet die Oberfläche ohne Fenster als Symbol rechts unten in der Taskleiste (Rechtsklick: sichern, öffnen, beenden). Das trägt auch der Autostart ein (Einstellungen → Start und Infobereich).", "gui --tray"),
     ]),

@@ -8,6 +8,8 @@ voneinander installier- und betreibbar; SuperPyBackup verändert SuperPSBackup n
 * Sicherung nach `Desktop`, `Dokumente`, `Bilder`, `Musik`, `Videos`, `Downloads`, `Favoriten` (Windows-Known-Folders, inkl. Umleitung/OneDrive) plus eigene Ordner
 * Normale Dateien im Ziel (kein Archivformat): Jeder Stand ist ein Ordner, den man im Explorer öffnen kann
 * Unveränderte Dateien werden per NTFS-Hardlink wiederverwendet – nur Neues/Geändertes belegt Speicher (**Inkrement**)
+* **Programmsymbol „Datenträger“**, das seine **Farbe nach dem Zustand wechselt**: blau = bereit, orange = Sicherung/Arbeit läuft, rot = letzter Lauf fehlgeschlagen (Infobereich, Fenster und Taskleiste)
+* **Desktop-Verknüpfung auf Bedarf** (Einstellungen → Start und Infobereich oder `shortcut create`)
 * **Symbol im Infobereich** (rechts unten in der Taskleiste): Schließen blendet das Fenster nur aus, die Oberfläche läuft weiter. Rechtsklick auf das Symbol: öffnen, sichern, weiteren Stand anlegen, Vollsicherung, Sicherung abbrechen, Autostart umschalten, beenden. Optional **Autostart beim Anmelden** (nur als Symbol, ohne Fenster); eine zweite Instanz holt das vorhandene Fenster nach vorn
 * Einschaltbare **Desktop-Meldungen** (Windows-Toast, Absender „SuperPyBackup“) bei abgeschlossener Sicherung, Wiederherstellung, Prüfung, Bereinigung, neuer Version/Update und Fehlern – in der Oberfläche und auch wenn die Sicherung als geplante Aufgabe unsichtbar läuft
 * Eigene **Aufgabe für die Updateprüfung** (Reiter „Aufgabe“): prüft still auf neue Versionen und meldet sie einmal je Version; installiert wird nie ohne Bestätigung
@@ -71,6 +73,7 @@ Die Sicherungsstände im Ziel werden dabei **nie** gelöscht.
 
 | Befehl | Wirkung |
 |---|---|
+| `shortcut create\|remove\|status` | Verknüpfung „SuperPyBackup“ auf dem Desktop anlegen, entfernen oder anzeigen (nur diese Datei, nur auf Wunsch) |
 | `gui [--tray]` | Oberfläche öffnen; mit `--tray` nur als Symbol im Infobereich (so startet der Autostart) |
 | `update check --quiet` | Stille Updateprüfung für die geplante Aufgabe: Desktop-Meldung bei neuer Version (einmal je Version), Ergebnis im Protokoll |
 | `notify-test` | Testmeldung auf dem Desktop anzeigen und den Schaltzustand nennen |

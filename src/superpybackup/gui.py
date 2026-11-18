@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, notify as notifymod, restore as restoremod, scheduler, snapshots, tray as trayicon, updater, winapi
+from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, tray as trayicon, updater, winapi
 from . import icon as appicon
 from .identity import get_identity
 from .runlog import RunLog
@@ -93,6 +93,9 @@ class App(tk.Tk):
         self.autostart_name = autostart_name or autostart.DEFAULT_NAME
         self.tray: trayicon.TrayIcon | None = None  # Symbol im Infobereich (nur im echten Programmstart)
         self._tray_events: queue.Queue = queue.Queue()
+        self._icon_state = appicon.IDLE  # Farbe des Programmsymbols: bereit (blau) / arbeitet (orange) / Fehler (rot)
+        self._last_run_failed = False
+        self._icon_images: dict[str, tk.PhotoImage] = {}
         self.config_data: dict[str, Any] = cfgmod.template("")
         self.config: cfgmod.Config | None = None
         self.messages: queue.Queue = queue.Queue()
@@ -398,6 +401,14 @@ class App(tk.Tk):
         self.var_close_to_tray = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="Beim Anmelden von Windows starten (nur als Symbol im Infobereich, ohne Fenster)", variable=self.var_autostart).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(box, text="Beim Schließen des Fensters im Infobereich weiterlaufen (Rechtsklick auf das Symbol: sichern, öffnen, beenden)", variable=self.var_close_to_tray).grid(row=1, column=0, sticky="w", pady=2)
+        shortcut_row = ttk.Frame(box)
+        shortcut_row.grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.btn_shortcut_create = ttk.Button(shortcut_row, text="Desktop-Verknüpfung anlegen", command=self.create_desktop_shortcut)
+        self.btn_shortcut_create.pack(side="left")
+        self.btn_shortcut_remove = ttk.Button(shortcut_row, text="Verknüpfung entfernen", command=self.remove_desktop_shortcut)
+        self.btn_shortcut_remove.pack(side="left", padx=8)
+        self.shortcut_label = ttk.Label(shortcut_row, text="", style="Sub.TLabel")
+        self.shortcut_label.pack(side="left", padx=8)
         # Schaltflächen
         actions = ttk.Frame(body)
         actions.grid(row=8, column=0, sticky="ew", padx=12, pady=(8, 14))
@@ -651,6 +662,7 @@ class App(tk.Tk):
             button.configure(state=state)
         self.btn_cancel.configure(state="normal" if running and self._backup_running else "disabled")
         self._refresh_tray_menu(running)
+        self._update_icon_state(running)
 
     # ------------------------------------------------------------------ Konfiguration
     def load_config(self) -> None:
@@ -705,6 +717,7 @@ class App(tk.Tk):
             self.var_autostart.set(autostart.is_enabled(self.autostart_name))
         except autostart.AutostartError:
             pass
+        self.refresh_shortcut_state()
 
     def collect_settings(self) -> dict[str, Any]:
         data = copy.deepcopy(self.config_data)
@@ -841,6 +854,7 @@ class App(tk.Tk):
         self._append(self.backup_log, "", clear=True)
         self.result_label.configure(text="Sicherung läuft ...", style="TLabel")
         self.set_status("Sicherung läuft ...")
+        self._last_run_failed = False
         self._tray_status("Sicherung läuft ...")
         writer = QueueWriter(self.messages)
 
@@ -858,10 +872,14 @@ class App(tk.Tk):
         if error or result is None:
             self.result_label.configure(text=f"Fehler: {error}", style="Bad.TLabel")
             self.set_status("Sicherung fehlgeschlagen.")
+            self._last_run_failed = True
+            self._update_icon_state()
             self._tray_status(f"{time.strftime('%H:%M')} Sicherung fehlgeschlagen.")
             self.notify(notifymod.ERROR, "Sicherung fehlgeschlagen", str(error or "Unbekannter Fehler"))
             return
         self.last_result = result
+        self._last_run_failed = result.status in (engine.FAILED, engine.PARTIAL)
+        self._update_icon_state()
         stats = result.stats
         text = {
             engine.COMPLETE: "Sicherung erfolgreich abgeschlossen.",
@@ -1334,10 +1352,22 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ Infobereich und Autostart
     def _set_window_icon(self) -> None:
         try:
-            self._icon_image = tk.PhotoImage(data=appicon.png_base64(64))
-            self.iconphoto(True, self._icon_image)
+            if self._icon_state not in self._icon_images:
+                self._icon_images[self._icon_state] = tk.PhotoImage(data=appicon.png_base64(64, self._icon_state))
+            self.iconphoto(True, self._icon_images[self._icon_state])  # Fenster und Taskleiste
         except tk.TclError:
             pass
+
+    def _update_icon_state(self, running: bool | None = None) -> None:
+        """Faerbt Fenster-, Taskleisten- und Infobereich-Symbol nach dem Zustand: arbeitet = orange, letzter Lauf fehlgeschlagen = rot."""
+        busy = (self._ops > 0 or self._backup_running) if running is None else running
+        state = appicon.BUSY if busy else appicon.ERROR if self._last_run_failed else appicon.IDLE
+        if state == self._icon_state:
+            return
+        self._icon_state = state
+        self._set_window_icon()
+        if self.tray is not None:
+            self.tray.set_state(state)
 
     def _start_tray(self, start_hidden: bool) -> None:
         tray = trayicon.TrayIcon(self._tray_events.put, "SuperPyBackup", self._tray_items(False))
@@ -1396,6 +1426,34 @@ class App(tk.Tk):
         self.attributes("-topmost", True)
         self.after(200, lambda: self.attributes("-topmost", False))
         self.focus_force()
+
+    def refresh_shortcut_state(self) -> None:
+        present = shortcutmod.exists()
+        self.shortcut_label.configure(text="Auf dem Desktop vorhanden." if present else "Nicht vorhanden.")
+        self.btn_shortcut_create.configure(text="Verknüpfung aktualisieren" if present else "Desktop-Verknüpfung anlegen")
+        self.btn_shortcut_remove.configure(state="normal" if present else "disabled")
+
+    def create_desktop_shortcut(self) -> None:
+        self.set_status("Desktop-Verknüpfung wird angelegt ...")
+
+        def done(path, error: BaseException | None) -> None:
+            self.refresh_shortcut_state()
+            if error:
+                self.error("Desktop-Verknüpfung", str(error))
+                self.set_status("Desktop-Verknüpfung nicht angelegt.")
+            else:
+                self.set_status(f"Desktop-Verknüpfung angelegt: {path}")
+
+        self.run_async(lambda: shortcutmod.create(str(self.config_path)), done)
+
+    def remove_desktop_shortcut(self) -> None:
+        try:
+            removed = shortcutmod.remove()
+        except shortcutmod.ShortcutError as error:
+            self.error("Desktop-Verknüpfung", str(error))
+            return
+        self.refresh_shortcut_state()
+        self.set_status("Desktop-Verknüpfung entfernt." if removed else "Es war keine Verknüpfung vorhanden.")
 
     def toggle_autostart(self) -> None:
         self.var_autostart.set(not autostart.is_enabled(self.autostart_name))
