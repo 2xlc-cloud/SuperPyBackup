@@ -49,6 +49,9 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("Auch Teil-Stände entfernen", "Entfernt zusätzlich Stände mit Status Partial (Sicherung mit Dateifehlern).", "cleanup --partial --dry-run"),
         ("Protokolle behalten", "Lässt alte Protokolldateien aus.", "cleanup --skip-logs"),
     ]),
+    ("Infobereich", [
+        ("Nur im Infobereich starten", "Startet die Oberfläche ohne Fenster als Symbol rechts unten in der Taskleiste (Rechtsklick: sichern, öffnen, beenden). Das trägt auch der Autostart ein (Einstellungen → Start und Infobereich).", "gui --tray"),
+    ]),
     ("Desktop-Meldungen", [
         ("Updateprüfung für die Aufgabe", "Stille Prüfung für die geplante Aufgabe (Reiter Aufgabe in der Oberfläche richtet sie ein): meldet eine neue Version einmal per Desktop-Meldung und schreibt das Ergebnis ins Protokoll.", "update check --quiet"),
         ("Testmeldung anzeigen", "Zeigt eine Meldung auf dem Desktop und nennt, ob Meldungen in der Konfiguration eingeschaltet sind (notifications.enabled, Standard: aus). Eingeschaltet melden Sicherung, Update und Fehler, auch bei der geplanten Aufgabe.", "notify-test"),

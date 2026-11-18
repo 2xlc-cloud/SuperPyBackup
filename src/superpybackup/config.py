@@ -64,7 +64,7 @@ DEFAULTS: dict[str, Any] = {
         "min_free_bytes": 0,
     },
     "logging": {"directory": "", "keep_days": 30, "max_file_mb": 20},
-    "gui": {"theme": "dark"},
+    "gui": {"theme": "dark", "close_to_tray": True},
     "notifications": {"enabled": False, "on_success": True, "on_update": True, "on_error": True},
     "update": {
         "check_for_updates": True,
@@ -226,6 +226,8 @@ def validate(data: dict[str, Any], *, require_target: bool = True) -> list[Sourc
         problems.append("'logging.directory' muss leer (Standard) oder ein absoluter Pfad sein.")
     _int(logging_cfg["keep_days"], "logging.keep_days", 1, 3650, problems)
     _int(logging_cfg["max_file_mb"], "logging.max_file_mb", 1, 1024, problems)
+    if not isinstance(data["gui"]["close_to_tray"], bool):
+        problems.append("'gui.close_to_tray' muss true oder false sein.")
     if data["gui"]["theme"] not in THEMES:
         problems.append(f"'gui.theme' muss {' oder '.join(THEMES)} sein (gefunden: {data['gui']['theme']!r}).")
     for key, value in data["notifications"].items():

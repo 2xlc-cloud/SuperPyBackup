@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ROOT, read_tree, write_tree
-from superpybackup import config as cfgmod, engine, scheduler, snapshots, updater
+from superpybackup import autostart, config as cfgmod, engine, scheduler, snapshots, updater
 
 tk = pytest.importorskip("tkinter")
 from superpybackup import gui  # noqa: E402
@@ -55,7 +55,7 @@ def app(env):
     for attempt in range(4):  # Tk-Initialisierung ist bei schnell aufeinanderfolgenden Fenstern gelegentlich fluechtig
         gc.collect()
         try:
-            application = gui.App(env.root / "config.json", task_name="SuperPyBackupTest-" + uuid.uuid4().hex[:10], hidden=True)
+            application = gui.App(env.root / "config.json", task_name="SuperPyBackupTest-" + uuid.uuid4().hex[:10], hidden=True, autostart_name="SuperPyBackupTest-" + uuid.uuid4().hex[:10])
             break
         except tk.TclError as error:
             last_error = error
@@ -76,6 +76,10 @@ def app(env):
         scheduler.uninstall(application.task_name)
         scheduler.uninstall(application.update_task_name)
     except scheduler.SchedulerError:
+        pass
+    try:
+        autostart.disable(application.autostart_name)
+    except autostart.AutostartError:
         pass
     application._closing = True
     try:
@@ -632,3 +636,121 @@ def test_gui_update_check_and_verify_notify(app, env, monkeypatch):
     app.wait_idle(30)
     pump(app, 0.8)
     assert shown[-1] == "Keine neue Version"
+
+
+class FakeTray:
+    """Ersatz fuer das Symbol im Infobereich: zeichnet Aufrufe auf."""
+
+    def __init__(self) -> None:
+        self.items = []
+        self.tooltip = ""
+        self.stopped = False
+
+    def set_items(self, items):
+        self.items = items
+
+    def set_tooltip(self, text):
+        self.tooltip = text
+
+    def stop(self):
+        self.stopped = True
+
+    def enabled(self):
+        return {item.event: item.enabled for item in self.items if item is not None}
+
+
+def with_tray(app, monkeypatch):
+    app.tray = FakeTray()
+    shown = []
+    app.withdraw = lambda: shown.append("hide")  # direkt setzen: wird mit dem Objekt freigegeben (kein monkeypatch-Rueckbau)
+    app.deiconify = lambda: shown.append("show")
+    app.focus_force = lambda: None
+    app._refresh_tray_menu(False)
+    return shown
+
+
+def test_close_hides_to_tray_and_keeps_running(app, monkeypatch):
+    shown = with_tray(app, monkeypatch)
+    app.var_close_to_tray.set(True)
+    app.on_close()
+    assert shown == ["hide"] and app._closing is False and app.winfo_exists() and "Infobereich" in app.tray.tooltip
+    app._handle_tray("open")
+    assert shown == ["hide", "show"]
+
+
+def test_close_quits_when_option_is_off_or_no_tray(app, monkeypatch):
+    with_tray(app, monkeypatch)
+    app.var_close_to_tray.set(False)
+    tray = app.tray
+    app.on_close()
+    assert tray.stopped and app._closing is True
+
+
+def test_tray_menu_quit_stops_icon_and_closes(app, monkeypatch):
+    with_tray(app, monkeypatch)
+    tray = app.tray
+    app._handle_tray("quit")
+    assert tray.stopped and app._closing is True
+
+
+def test_tray_menu_reflects_busy_state_and_autostart(app, monkeypatch, env):
+    with_tray(app, monkeypatch)
+    assert app.tray.enabled() == {"open": True, "backup": True, "backup_new": True, "backup_full": True, "cancel": False, "autostart": True, "quit": True}
+    app._set_busy_state(True)
+    assert app.tray.enabled()["backup"] is False and app.tray.enabled()["backup_full"] is False
+    app._backup_running = True
+    app._refresh_tray_menu(True)
+    assert app.tray.enabled()["cancel"] is True
+    app._backup_running = False
+    app._set_busy_state(False)
+    assert not [i for i in app.tray.items if i is not None and i.event == "autostart"][0].checked
+    app.var_autostart.set(True)
+    app._apply_autostart()
+    assert [i for i in app.tray.items if i is not None and i.event == "autostart"][0].checked
+
+
+def test_tray_backup_options_start_the_right_kind_of_backup(app, env, monkeypatch):
+    with_tray(app, monkeypatch)
+    write_tree(env.src, {"a.txt": "inhalt"})
+    configure(app, env)
+    app._handle_tray("backup")
+    app.wait_idle(60)
+    assert app.last_result.status == engine.COMPLETE and app.last_result.kind == engine.FULL and "Sicherung" in app.tray.tooltip
+    app._handle_tray("backup_new")
+    app.wait_idle(60)
+    assert app.last_result.kind == engine.INCREMENTAL
+    app._handle_tray("backup_full")
+    app.wait_idle(60)
+    assert app.last_result.kind == engine.FULL and len(snapshots.list_snapshots(str(env.target), env.identity.sid, ("Daily",))) == 3
+
+
+def test_tray_backup_without_target_shows_the_window_and_the_error(app, monkeypatch):
+    shown = with_tray(app, monkeypatch)
+    app._handle_tray("backup")
+    assert "show" in shown and app.dialogs.kinds("fehler")
+
+
+def test_autostart_setting_is_saved_and_toggled_from_tray(app, env):
+    configure(app, env)
+    assert not autostart.is_enabled(app.autostart_name)
+    app.var_autostart.set(True)
+    app.var_close_to_tray.set(False)
+    assert app.save_settings() is True
+    assert autostart.is_enabled(app.autostart_name) and 'gui --tray' in autostart.current(app.autostart_name)
+    assert json.loads((env.root / "config.json").read_text(encoding="utf-8"))["gui"]["close_to_tray"] is False
+    app.var_autostart.set(False)
+    app.load_config()  # Zuruecksetzen liest den tatsaechlichen Zustand aus der Registry
+    assert app.var_autostart.get() is True and app.var_close_to_tray.get() is False
+    app.toggle_autostart()  # wie "Mit Windows starten" im Menue des Symbols
+    assert not autostart.is_enabled(app.autostart_name)
+    app.toggle_autostart()
+    assert autostart.is_enabled(app.autostart_name)
+
+
+def test_tray_events_from_another_thread_reach_the_window(app, monkeypatch):
+    shown = with_tray(app, monkeypatch)
+    import threading
+
+    threading.Thread(target=app._tray_events.put, args=("open",)).start()
+    pump(app, 0.5)
+    assert shown == ["show"]

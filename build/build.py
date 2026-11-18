@@ -36,12 +36,18 @@ def version() -> str:
 
 def main() -> int:
     DIST.mkdir(exist_ok=True)
+    WORK.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(ROOT / "src"))
+    from superpybackup import icon
+
+    icon_path = WORK / "SuperPyBackup.ico"
+    icon_path.write_bytes(icon.ico_bytes())
     for name, mode in TARGETS:
         command = [
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", mode,
             "--name", name, "--paths", str(ROOT / "src"),
             "--distpath", str(DIST), "--workpath", str(WORK / name), "--specpath", str(WORK),
-            "--log-level", "WARN",
+            "--log-level", "WARN", "--icon", str(icon_path),
         ]
         for module in EXCLUDES:
             command += ["--exclude-module", module]

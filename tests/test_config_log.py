@@ -21,7 +21,7 @@ def test_defaults_match_the_requirements():
     assert config.log_keep_days == 30 and config.backup["existing_daily"] == "skip"
     assert config.data["known_folders"] == ["Desktop", "Documents", "Pictures", "Music", "Videos", "Downloads", "Favorites"]
     assert config.update["check_for_updates"] is True
-    assert config.data["gui"] == {"theme": "dark"}  # Dunkelmodus ist der Standard
+    assert config.data["gui"] == {"theme": "dark", "close_to_tray": True}  # Dunkelmodus ist der Standard
 
 
 def test_validation_reports_all_problems_at_once():

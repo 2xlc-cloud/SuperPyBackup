@@ -183,14 +183,14 @@ def _open_gui_and_kill(command: list[str], env_vars: dict, timeout: float = 40.0
 
 
 def test_windowed_exe_without_arguments_opens_the_gui(env):
-    windows, running = _open_gui_and_kill([str(GUI_EXE)], clean_env(env))
+    windows, running = _open_gui_and_kill([str(GUI_EXE)], clean_env(env, SUPERPYBACKUP_NO_TRAY="1"))
     assert running and windows, "SuperPyBackup.exe ohne Argumente muss das Hauptfenster oeffnen"
     assert windows[0][1] == f"SuperPyBackup {__version__}"
 
 
 def test_cmd_exe_gui_command_opens_the_gui(env):
     env.write_config_file()
-    windows, running = _open_gui_and_kill([str(CMD_EXE), "--config", str(env.root / "config.json"), "gui"], clean_env(env))
+    windows, running = _open_gui_and_kill([str(CMD_EXE), "--config", str(env.root / "config.json"), "gui"], clean_env(env, SUPERPYBACKUP_NO_TRAY="1"))
     assert running and windows
 
 def test_exe_cleanup_dry_run_and_confirmation(env):
@@ -225,3 +225,71 @@ def test_exe_notifications_use_the_capture_hook(env, tmp_path):
     result = subprocess.run([str(CMD_EXE), "--config", str(env.root / "config.json"), "backup", "--quiet"], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
                             env=dict(clean_env(env), SUPERPYBACKUP_NOTIFY_FILE=str(sink)))
     assert result.returncode == 0 and "Sicherung abgeschlossen" in sink.read_text(encoding="utf-8")
+
+
+def _process_windows(pid: int) -> list[tuple[int, str, str, bool]]:
+    """Alle Fenster, die zur Onefile-EXE gehoeren: (hwnd, Klasse, Titel, sichtbar). Die Fenster liegen im Kindprozess des gestarteten Prozesses, daher wird nach Klasse/Titel gesucht."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: list[tuple[int, str, str, bool]] = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def callback(hwnd, lparam):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        title = ctypes.create_unicode_buffer(256)
+        cls = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, title, 256)
+        user32.GetClassNameW(hwnd, cls, 256)
+        if cls.value == "SuperPyBackupTrayWindow" or title.value == f"SuperPyBackup {__version__}":
+            found.append((hwnd, cls.value, title.value, bool(user32.IsWindowVisible(hwnd))))
+        return True
+
+    user32.EnumWindows(callback_type(callback), 0)
+    return found
+
+
+def test_exe_tray_start_is_hidden_and_a_second_start_reopens_it(env):
+    import ctypes
+    import time
+
+    from superpybackup import tray
+
+    if tray.user32.FindWindowW(tray.CLASS_NAME, None):
+        pytest.skip("Es laeuft bereits eine SuperPyBackup-Oberflaeche mit Infobereich-Symbol")
+    env.write_config_file()
+    config = str(env.root / "config.json")
+    title = f"SuperPyBackup {__version__}"
+    process = subprocess.Popen([str(GUI_EXE), "--config", config, "gui", "--tray"], env=clean_env(env), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    tray_hwnd = 0
+    try:
+        deadline = time.time() + 40
+        main_window = None
+        while time.time() < deadline and process.poll() is None:
+            windows = _process_windows(process.pid)
+            tray_hwnd = next((w[0] for w in windows if w[1] == tray.CLASS_NAME), 0)
+            main_window = next((w for w in windows if w[2] == title), None)
+            if tray_hwnd and main_window:
+                break
+            time.sleep(0.25)
+        assert tray_hwnd, "Das Symbol im Infobereich wurde nicht angelegt"
+        assert main_window and main_window[3] is False, "Mit --tray darf kein Fenster sichtbar sein"
+        second = subprocess.run([str(GUI_EXE), "--config", config, "gui"], env=clean_env(env), timeout=40, stdin=subprocess.DEVNULL, capture_output=True)
+        assert second.returncode == 0  # zweite Instanz endet sofort
+        visible = False
+        for _ in range(80):
+            visible = any(w[2] == title and w[3] for w in _process_windows(process.pid))
+            if visible:
+                break
+            time.sleep(0.1)
+        assert visible, "Die zweite Instanz muss das vorhandene Fenster in den Vordergrund holen"
+        silent = subprocess.run([str(GUI_EXE), "--config", config, "gui", "--tray"], env=clean_env(env), timeout=40, stdin=subprocess.DEVNULL, capture_output=True)
+        assert silent.returncode == 0 and len([p for p in [process] if p.poll() is None]) == 1
+    finally:
+        if tray_hwnd:
+            ctypes.windll.user32.PostMessageW(tray_hwnd, tray.WM_CLOSE, 0, 0)  # Symbol sauber entfernen (kein Geistersymbol)
+            time.sleep(0.5)
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+        process.wait(timeout=30)

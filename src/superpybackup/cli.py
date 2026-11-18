@@ -268,7 +268,7 @@ def cmd_notify_test(args: argparse.Namespace) -> int:
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import main_gui
 
-    return main_gui(args.config)
+    return main_gui(args.config, tray_start=getattr(args, "tray", False))
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -377,6 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     notify_test.set_defaults(func=cmd_notify_test)
 
     gui = sub.add_parser("gui", help="Grafische Oberflaeche oeffnen (ohne Argumente startet SuperPyBackup.exe ebenfalls die Oberflaeche)")
+    gui.add_argument("--tray", action="store_true", help="nur als Symbol im Infobereich starten (Autostart); ohne Konfiguration wird das Fenster gezeigt")
     gui.set_defaults(func=cmd_gui)
     return parser
 

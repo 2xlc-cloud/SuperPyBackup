@@ -22,7 +22,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, notify as notifymod, restore as restoremod, scheduler, snapshots, updater, winapi
+from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, notify as notifymod, restore as restoremod, scheduler, snapshots, tray as trayicon, updater, winapi
+from . import icon as appicon
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -79,7 +80,7 @@ class ScrollFrame(ttk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self, config_path: str | os.PathLike[str] | None = None, *, task_name: str | None = None, hidden: bool = False) -> None:
+    def __init__(self, config_path: str | os.PathLike[str] | None = None, *, task_name: str | None = None, hidden: bool = False, tray: bool = False, start_in_tray: bool = False, autostart_name: str | None = None) -> None:
         super().__init__()
         self.title(f"SuperPyBackup {__version__}")
         self.geometry("980x720")
@@ -89,6 +90,9 @@ class App(tk.Tk):
         self.config_path = Path(config_path) if config_path else cfgmod.default_config_path()
         self.task_name = task_name or scheduler.default_task_name()
         self.update_task_name = scheduler.update_task_name(self.task_name)
+        self.autostart_name = autostart_name or autostart.DEFAULT_NAME
+        self.tray: trayicon.TrayIcon | None = None  # Symbol im Infobereich (nur im echten Programmstart)
+        self._tray_events: queue.Queue = queue.Queue()
         self.config_data: dict[str, Any] = cfgmod.template("")
         self.config: cfgmod.Config | None = None
         self.messages: queue.Queue = queue.Queue()
@@ -116,6 +120,9 @@ class App(tk.Tk):
         self.apply_theme(self.theme)  # nach dem Aufbau: auch tk-Widgets und Titelleiste einfaerben
         self.load_config()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._set_window_icon()
+        if tray:
+            self._start_tray(start_in_tray)
         self.after(100, self._poll)
 
     # ------------------------------------------------------------------ Aufbau
@@ -384,16 +391,23 @@ class App(tk.Tk):
         ttk.Checkbutton(box, text="Fehler", variable=self.var_notify_error).grid(row=1, column=2, sticky="w", padx=8)
         self.btn_notify_test = ttk.Button(box, text="Testmeldung", command=self.test_notification)
         self.btn_notify_test.grid(row=1, column=3, sticky="e", padx=8)
+        # Start und Infobereich
+        box = ttk.LabelFrame(body, text="Start und Infobereich", padding=10)
+        box.grid(row=7, column=0, sticky="ew", **pad)
+        self.var_autostart = tk.BooleanVar(value=False)
+        self.var_close_to_tray = tk.BooleanVar(value=True)
+        ttk.Checkbutton(box, text="Beim Anmelden von Windows starten (nur als Symbol im Infobereich, ohne Fenster)", variable=self.var_autostart).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(box, text="Beim Schließen des Fensters im Infobereich weiterlaufen (Rechtsklick auf das Symbol: sichern, öffnen, beenden)", variable=self.var_close_to_tray).grid(row=1, column=0, sticky="w", pady=2)
         # Schaltflächen
         actions = ttk.Frame(body)
-        actions.grid(row=7, column=0, sticky="ew", padx=12, pady=(8, 14))
+        actions.grid(row=8, column=0, sticky="ew", padx=12, pady=(8, 14))
         self.btn_save = ttk.Button(actions, text="Speichern", style="Big.TButton", command=self.save_settings)
         self.btn_save.pack(side="left")
         ttk.Button(actions, text="Zurücksetzen (aus Datei laden)", command=self.load_config).pack(side="left", padx=8)
         self.settings_path_label = ttk.Label(actions, text="", style="Sub.TLabel")
         self.settings_path_label.pack(side="left", padx=8)
         self.settings_message = ttk.Label(body, text="", wraplength=860, justify="left")
-        self.settings_message.grid(row=8, column=0, sticky="w", padx=12, pady=(0, 12))
+        self.settings_message.grid(row=9, column=0, sticky="w", padx=12, pady=(0, 12))
 
     def _build_restore_tab(self) -> None:
         tab = self.tab_restore
@@ -580,6 +594,11 @@ class App(tk.Tk):
     def _poll(self) -> None:
         try:
             while True:
+                self._handle_tray(self._tray_events.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            while True:
                 message = self.messages.get_nowait()
                 if message[0] == "log":
                     self._append(self.backup_log, message[1])
@@ -631,6 +650,7 @@ class App(tk.Tk):
         for button in (self.btn_backup, self.btn_backup_new, self.btn_backup_full, self.btn_restore, self.btn_save, self.btn_verify, self.btn_cleanup):
             button.configure(state=state)
         self.btn_cancel.configure(state="normal" if running and self._backup_running else "disabled")
+        self._refresh_tray_menu(running)
 
     # ------------------------------------------------------------------ Konfiguration
     def load_config(self) -> None:
@@ -680,6 +700,11 @@ class App(tk.Tk):
         self.var_notify_success.set(data["notifications"]["on_success"])
         self.var_notify_update.set(data["notifications"]["on_update"])
         self.var_notify_error.set(data["notifications"]["on_error"])
+        self.var_close_to_tray.set(data["gui"]["close_to_tray"])
+        try:
+            self.var_autostart.set(autostart.is_enabled(self.autostart_name))
+        except autostart.AutostartError:
+            pass
 
     def collect_settings(self) -> dict[str, Any]:
         data = copy.deepcopy(self.config_data)
@@ -704,6 +729,7 @@ class App(tk.Tk):
         data["logging"]["directory"] = self.var_log_dir.get().strip()
         data["logging"]["keep_days"] = number(self.var_log_days, "Protokolle behalten (Tage)")
         data["update"]["check_for_updates"] = self.var_check_updates.get()
+        data["gui"]["close_to_tray"] = self.var_close_to_tray.get()
         data["notifications"] = {"enabled": self.var_notify.get(), "on_success": self.var_notify_success.get(), "on_update": self.var_notify_update.get(), "on_error": self.var_notify_error.get()}
         return data
 
@@ -724,6 +750,7 @@ class App(tk.Tk):
         self.settings_message.configure(text=f"Gespeichert: {self.config_path}" + ("" if self.config.backup_root else "  (Hinweis: Es ist noch kein Sicherungsziel eingetragen.)"), style="Ok.TLabel")
         self.set_status("Einstellungen gespeichert.")
         self.refresh_summary()
+        self._apply_autostart()
         return True
 
     def add_extra_source(self) -> None:
@@ -814,6 +841,7 @@ class App(tk.Tk):
         self._append(self.backup_log, "", clear=True)
         self.result_label.configure(text="Sicherung läuft ...", style="TLabel")
         self.set_status("Sicherung läuft ...")
+        self._tray_status("Sicherung läuft ...")
         writer = QueueWriter(self.messages)
 
         def on_progress(phase: str, done: int, total: int, text: str) -> None:
@@ -830,6 +858,7 @@ class App(tk.Tk):
         if error or result is None:
             self.result_label.configure(text=f"Fehler: {error}", style="Bad.TLabel")
             self.set_status("Sicherung fehlgeschlagen.")
+            self._tray_status(f"{time.strftime('%H:%M')} Sicherung fehlgeschlagen.")
             self.notify(notifymod.ERROR, "Sicherung fehlgeschlagen", str(error or "Unbekannter Fehler"))
             return
         self.last_result = result
@@ -848,6 +877,7 @@ class App(tk.Tk):
         text += f"\nNeu {stats.new}, geändert {stats.modified}, unverändert {stats.unchanged}, ausgelassen {stats.skipped}, Fehler {stats.errors} | übertragen {_human(stats.bytes_transferred)}, gesamt {_human(stats.total_bytes)} | {result.seconds:.1f} s"
         self.result_label.configure(text=text, style="Ok.TLabel" if result.status in (engine.COMPLETE, engine.ALREADY) else "Bad.TLabel" if result.status in (engine.FAILED, engine.PARTIAL) else "TLabel")
         self.set_status(text.splitlines()[0])
+        self._tray_status(f"{time.strftime('%H:%M')} {text.splitlines()[0]}")
         message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""))
         if message:
             self.notify(*message)
@@ -1301,9 +1331,100 @@ class App(tk.Tk):
         os.makedirs(folder, exist_ok=True)
         subprocess.Popen(["explorer.exe", folder])
 
+    # ------------------------------------------------------------------ Infobereich und Autostart
+    def _set_window_icon(self) -> None:
+        try:
+            self._icon_image = tk.PhotoImage(data=appicon.png_base64(64))
+            self.iconphoto(True, self._icon_image)
+        except tk.TclError:
+            pass
+
+    def _start_tray(self, start_hidden: bool) -> None:
+        tray = trayicon.TrayIcon(self._tray_events.put, "SuperPyBackup", self._tray_items(False))
+        if not tray.start():
+            return  # kein Infobereich verfuegbar: Fenster verhaelt sich wie gewohnt
+        self.tray = tray
+        if start_hidden and self.config_path.is_file():
+            self.withdraw()
+
+    def _tray_items(self, busy: bool | None = None) -> list:
+        busy = (self._ops > 0 or self._backup_running) if busy is None else busy
+        try:
+            autostart_on = autostart.is_enabled(self.autostart_name)
+        except autostart.AutostartError:
+            autostart_on = False
+        item = trayicon.MenuItem
+        return [
+            item("open", "SuperPyBackup öffnen", default=True),
+            None,
+            item("backup", "Jetzt sichern", enabled=not busy),
+            item("backup_new", "Weiteren Stand anlegen", enabled=not busy),
+            item("backup_full", "Vollsicherung", enabled=not busy),
+            item("cancel", "Sicherung abbrechen", enabled=self._backup_running),
+            None,
+            item("autostart", "Mit Windows starten", checked=autostart_on),
+            item("quit", "Beenden"),
+        ]
+
+    def _refresh_tray_menu(self, busy: bool | None = None) -> None:
+        if self.tray is not None:
+            self.tray.set_items(self._tray_items(busy))
+
+    def _tray_status(self, text: str) -> None:
+        if self.tray is not None:
+            self.tray.set_tooltip(("SuperPyBackup – " + text)[:120])
+
+    def _handle_tray(self, name: str) -> None:
+        """Ereignis aus dem Menue oder Klick auf das Symbol (im Hauptthread)."""
+        if name == "open":
+            self.show_window()
+        elif name in ("backup", "backup_new", "backup_full"):
+            if self.config is None or not self.config.backup_root:
+                self.show_window()  # Dialog soll sichtbar sein
+            self.start_backup(name != "backup", engine.FULL if name == "backup_full" else None)
+        elif name == "cancel":
+            self.cancel_backup()
+        elif name == "autostart":
+            self.toggle_autostart()
+        elif name == "quit":
+            self.quit_app()
+
+    def show_window(self) -> None:
+        self.deiconify()
+        self.state("normal")
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(200, lambda: self.attributes("-topmost", False))
+        self.focus_force()
+
+    def toggle_autostart(self) -> None:
+        self.var_autostart.set(not autostart.is_enabled(self.autostart_name))
+        self._apply_autostart()
+
+    def _apply_autostart(self) -> None:
+        """Gleicht den Autostart-Eintrag (HKCU Run) mit dem Haken in den Einstellungen ab."""
+        try:
+            if self.var_autostart.get():
+                autostart.enable(str(self.config_path), self.autostart_name)
+                self.set_status("Autostart eingerichtet: SuperPyBackup startet beim Anmelden im Infobereich.")
+            elif autostart.disable(self.autostart_name):
+                self.set_status("Autostart entfernt.")
+        except autostart.AutostartError as error:
+            self.error("Autostart", str(error))
+        self._refresh_tray_menu()
+
     # ------------------------------------------------------------------ Beenden
     def on_close(self) -> None:
+        """Schliessen-Schaltflaeche: mit Symbol im Infobereich nur ausblenden, sonst beenden."""
+        if self.tray is not None and self.var_close_to_tray.get() and not self._closing:
+            self.withdraw()
+            self._tray_status("läuft im Infobereich")
+            return
+        self.quit_app()
+
+    def quit_app(self) -> None:
         if self._backup_running:
+            self.show_window()
             if not self.ask_yes_no("Beenden", "Eine Sicherung läuft noch. Abbrechen und beenden?\n(Es entsteht dabei kein unvollständiger Stand.)"):
                 return
             self._cancel.set()
@@ -1312,6 +1433,9 @@ class App(tk.Tk):
                 self.update()
                 time.sleep(0.05)
         self._closing = True
+        if self.tray is not None:
+            self.tray.stop()
+            self.tray = None
         self.destroy()
 
 
@@ -1327,11 +1451,22 @@ class _PrefixWriter:
         pass
 
 
-def main_gui(config_path: str | None = None) -> int:
+def main_gui(config_path: str | None = None, tray_start: bool = False) -> int:
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # scharfe Darstellung auf Bildschirmen mit Skalierung
     except (AttributeError, OSError):
         pass
-    app = App(config_path)
+    mutex = None
+    use_tray = not os.environ.get("SUPERPYBACKUP_NO_TRAY")  # fuer automatische Tests: kein Symbol, keine Einzelinstanz
+    try:  # nur eine Oberflaeche je Benutzer: eine zweite holt das vorhandene Fenster nach vorn und endet
+        mutex = winapi.NamedMutex("Local\\SuperPyBackup-Gui-" + winapi.current_user_sid()) if use_tray else None
+        if mutex is not None and not mutex.try_acquire():
+            if tray_start or trayicon.request_open_existing():
+                return 0
+    except Exception:  # noqa: BLE001 - die Einzelinstanz-Pruefung darf den Start nie verhindern
+        mutex = None
+    app = App(config_path, tray=use_tray, start_in_tray=tray_start)
     app.mainloop()
+    if mutex is not None:
+        mutex.close()
     return 0
