@@ -26,7 +26,7 @@ Grundlage ist die Analyse des PowerShell-Projekts `SuperPSBackup` (Stand 1.1.0, 
 | 16 | Selbstupdate aus GitHub (Manifest, SHA-256, Transaktion, Rollback, Programmsperre) | GitHub-Releases, SHA-256-Prüfung, Download nur nach Bestätigung, Austausch mit Rollback | `updater` |
 | 17 | GUI (Taskplanung, Einstellungen, Updatedialog) | tkinter-GUI mit Tabs Sicherung, Einstellungen, Wiederherstellung, Aufgabe, Update, Protokoll; Dunkelmodus als Standard | `gui` |
 | 18 | `FirstInstall.ps1` mit Systemcheck | Eigenständige EXE ohne Installer; Installation = Datei kopieren + `task install` | – |
-| 20 | Desktop-Meldungen (Windows-Toast) bei Sicherung, Update und Fehlern, auch bei der geplanten Aufgabe | neu: `notifications.enabled` (Standard aus) plus Schalter je Ereignis, `notify-test`, Testknopf in den Einstellungen; Anzeige über verstecktes Windows PowerShell, Fehler beim Anzeigen beeinträchtigen nie eine Sicherung | `notify` |
+| 20 | Desktop-Meldungen (Windows-Toast) bei Sicherung, Update und Fehlern, auch bei der geplanten Aufgabe | neu: `notifications.enabled` (Standard aus) plus Schalter je Ereignis, `notify-test`, Testknopf in den Einstellungen; Anzeige über verstecktes Windows PowerShell mit eigenem Absendernamen „SuperPyBackup“ (HKCUSoftwareClassesAppUserModelIdSuperPyBackup.Desktop), Fehler beim Anzeigen beeinträchtigen nie eine Sicherung | `notify` |
 | 19 | Migration vom Altnamen UserProfileBackup | entfällt (neues Projekt) | – |
 
 ## 2. Gefundene Schwächen der Referenz (nicht übernommen)

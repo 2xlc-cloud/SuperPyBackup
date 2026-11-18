@@ -13,14 +13,13 @@ import os
 import subprocess
 from pathlib import Path
 
-from . import __version__
-
 SUCCESS = "success"
 UPDATE = "update"
 ERROR = "error"
 EVENT_KEYS = {SUCCESS: "on_success", UPDATE: "on_update", ERROR: "on_error"}
 CREATE_NO_WINDOW = 0x08000000
-APP_ID = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"  # bekannte AppUserModelID von Windows PowerShell
+APP_ID = "SuperPyBackup.Desktop"  # eigene AppUserModelID: Windows zeigt ihren DisplayName als Absender
+APP_NAME = "SuperPyBackup"
 
 _SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
@@ -41,6 +40,24 @@ def _powershell() -> str:
     return os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
 
+def register_app_id(app_id: str = APP_ID, display_name: str = APP_NAME) -> bool:
+    """Legt (idempotent) den Absendernamen im Benutzerzweig an: HKCU\\Software\\Classes\\AppUserModelId\\<ID>. Keine Administratorrechte noetig."""
+    try:
+        import winreg
+
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\AppUserModelId\{app_id}", 0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as key:
+            try:
+                if winreg.QueryValueEx(key, "DisplayName")[0] == display_name:
+                    return True
+            except FileNotFoundError:
+                pass
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, display_name)
+            winreg.SetValueEx(key, "ShowInSettings", 0, winreg.REG_DWORD, 1)
+        return True
+    except OSError:
+        return False
+
+
 def show(title: str, message: str) -> bool:
     """Zeigt eine Desktop-Meldung. True, wenn sie abgesetzt wurde; nie eine Ausnahme."""
     title, message = title[:120], message[:400]
@@ -53,6 +70,7 @@ def show(title: str, message: str) -> bool:
         except OSError:
             return False
     try:
+        register_app_id()  # ohne Eintrag lehnt Windows die Meldung ab; dann meldet PowerShell den Fehler und show() liefert False
         encoded = base64.b64encode(_SCRIPT.encode("utf-16-le")).decode("ascii")
         env = dict(os.environ, SPB_TITLE=title, SPB_MESSAGE=message, SPB_APPID=APP_ID)
         result = subprocess.run(
@@ -108,6 +126,3 @@ def backup_message(result, kind_label: str = "") -> tuple[str, str, str] | None:
         return ERROR, "Sicherung fehlgeschlagen", result.message or "Unbekannter Fehler. Details im Protokoll."
     return None
 
-
-def version_line() -> str:
-    return f"SuperPyBackup {__version__}"

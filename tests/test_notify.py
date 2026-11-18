@@ -117,3 +117,21 @@ def test_show_never_raises_when_powershell_is_missing(monkeypatch):
     monkeypatch.delenv("SUPERPYBACKUP_NOTIFY_FILE", raising=False)
     monkeypatch.setattr(notify, "_powershell", lambda: r"C:\gibt\es\nicht\powershell.exe")
     assert notify.show("a", "b") is False
+
+
+def test_sender_name_is_registered_per_user_and_idempotent():
+    import winreg
+
+    app_id = "SuperPyBackup.Test.Absender"
+    path = rf"Software\Classes\AppUserModelId\{app_id}"
+    try:
+        assert notify.register_app_id(app_id, "SuperPyBackup") is True
+        assert notify.register_app_id(app_id, "SuperPyBackup") is True  # zweiter Aufruf aendert nichts
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            assert winreg.QueryValueEx(key, "DisplayName")[0] == "SuperPyBackup"
+    finally:
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+        except OSError:
+            pass
+    assert notify.APP_ID == "SuperPyBackup.Desktop" and notify.APP_NAME == "SuperPyBackup"
