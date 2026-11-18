@@ -1,0 +1,14 @@
+# Build-Ergebnisse und Zwischenstaende
+dist/
+build/work/
+*.spec
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Lokale Konfiguration, Protokolle und Testdaten gehoeren nie ins Repository
+config.json
+*.log
+bench/work/
+.venv/

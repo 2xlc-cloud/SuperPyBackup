@@ -1,0 +1,168 @@
+"""Windows-Aufgabenplanung: Aufgabe anlegen, pruefen, aendern, entfernen (ueber schtasks.exe und Aufgaben-XML)."""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+from . import winapi
+
+NAME_PATTERN = re.compile(r"^SuperPyBackup[A-Za-z0-9._-]*$")
+NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+CREATE_NO_WINDOW = 0x08000000
+
+
+class SchedulerError(Exception):
+    pass
+
+
+def default_task_name() -> str:
+    return "SuperPyBackup-" + winapi.current_user_sid()
+
+
+def validate_name(name: str) -> str:
+    """Nur Aufgaben, die eindeutig SuperPyBackup zugeordnet sind (nie SuperPSBackup oder fremde Aufgaben)."""
+    if not NAME_PATTERN.match(name):
+        raise SchedulerError(f"Ungueltiger Aufgabenname {name!r}: Er muss mit 'SuperPyBackup' beginnen und darf nur Buchstaben, Ziffern, '.', '_' und '-' enthalten.")
+    return name
+
+
+def program_command(config_path: str | None) -> tuple[str, str]:
+    """Programm und Argumente fuer den geplanten Lauf. Bevorzugt die konsolenlose SuperPyBackup.exe."""
+    config_arg = f'--config "{config_path}" ' if config_path else ""
+    if getattr(sys, "frozen", False):
+        executable = Path(sys.executable)
+        windowed = executable.with_name("SuperPyBackup.exe")
+        program = windowed if windowed.is_file() else executable
+        return str(program), f"{config_arg}backup --quiet"
+    python = Path(sys.executable)
+    pythonw = python.with_name("pythonw.exe")
+    program = pythonw if pythonw.is_file() else python
+    return str(program), f"-m superpybackup {config_arg}backup --quiet"
+
+
+def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None) -> str:
+    if not 0 <= delay_minutes <= 60:
+        raise SchedulerError("Die Verzoegerung muss zwischen 0 und 60 Minuten liegen.")
+    daily = ""
+    if daily_at:
+        try:
+            clock = datetime.strptime(daily_at, "%H:%M")
+        except ValueError as error:
+            raise SchedulerError("Die Uhrzeit muss im Format HH:MM angegeben werden.") from error
+        boundary = datetime.now().replace(hour=clock.hour, minute=clock.minute, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%S")
+        daily = f"<CalendarTrigger><StartBoundary>{boundary}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>"
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>SuperPyBackup: versionierte Sicherung der persoenlichen Benutzerordner.</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><Delay>PT{delay_minutes}M</Delay><UserId>{escape(sid)}</UserId></LogonTrigger>{daily}</Triggers>
+  <Principals><Principal id="User"><UserId>{escape(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="User"><Exec><Command>{escape(command)}</Command><Arguments>{escape(arguments)}</Arguments></Exec></Actions>
+</Task>
+"""
+
+
+def _run(arguments: list[str]) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["schtasks.exe", *arguments], capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=60)
+
+
+def _decode(data: bytes) -> str:
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16")
+    for encoding in ("utf-8", "cp850", "cp1252"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1")
+
+
+def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None) -> str:
+    """Legt die Aufgabe an oder aktualisiert sie (idempotent). Aufgaben anderer Namen bleiben unberuehrt."""
+    validate_name(name)
+    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at)
+    with tempfile.TemporaryDirectory(prefix="superpybackup-task-") as folder:
+        path = os.path.join(folder, "task.xml")
+        with open(path, "wb") as handle:
+            handle.write(b"\xff\xfe" + xml.encode("utf-16-le"))
+        result = _run(["/Create", "/TN", name, "/XML", path, "/F"])
+    if result.returncode != 0:
+        raise SchedulerError(f"Aufgabe konnte nicht angelegt werden: {_decode(result.stderr or result.stdout).strip()}")
+    return name
+
+
+def status(name: str) -> dict[str, object]:
+    """Liest die tatsaechliche Konfiguration der Aufgabe. exists=False, wenn sie nicht vorhanden ist."""
+    validate_name(name)
+    result = _run(["/Query", "/TN", name, "/XML"])
+    if result.returncode != 0:
+        return {"exists": False, "name": name}
+    text = _decode(result.stdout).strip()
+    text = re.sub(r"^<\?xml[^>]*\?>", "", text).strip()
+    root = ET.fromstring(text)
+    find = lambda path: root.find(path, NS)  # noqa: E731
+    logon = find(".//t:LogonTrigger/t:Delay")
+    boundary = find(".//t:CalendarTrigger/t:StartBoundary")
+    delay = None
+    if logon is not None and logon.text:
+        match = re.fullmatch(r"PT(\d+)M", logon.text)
+        delay = int(match.group(1)) if match else None
+    daily = boundary.text[11:16] if boundary is not None and boundary.text else None
+    text_of = lambda path: (find(path).text if find(path) is not None else None)  # noqa: E731
+    return {
+        "exists": True,
+        "name": name,
+        "enabled": text_of(".//t:Settings/t:Enabled") != "false",
+        "hidden": text_of(".//t:Settings/t:Hidden") == "true",
+        "delay_minutes": delay,
+        "daily_at": daily,
+        "command": text_of(".//t:Actions/t:Exec/t:Command"),
+        "arguments": text_of(".//t:Actions/t:Exec/t:Arguments"),
+        # Windows laesst Standardwerte im exportierten XML weg: LeastPrivilege und IgnoreNew sind die Vorgaben.
+        "run_level": text_of(".//t:Principals/t:Principal/t:RunLevel") or "LeastPrivilege",
+        "multiple_instances": text_of(".//t:Settings/t:MultipleInstancesPolicy") or "IgnoreNew",
+        "user_id": text_of(".//t:Principals/t:Principal/t:UserId"),
+    }
+
+
+def check(name: str) -> list[str]:
+    """Prueft die Aufgabe gegen die Sollwerte; liefert Abweichungen (leer = in Ordnung)."""
+    info = status(name)
+    if not info["exists"]:
+        return [f"Aufgabe {name} ist nicht eingerichtet."]
+    problems = []
+    if not info["enabled"]:
+        problems.append("Aufgabe ist deaktiviert.")
+    if info["run_level"] != "LeastPrivilege":
+        problems.append("Aufgabe laeuft mit erhoehten Rechten.")
+    if not info["hidden"]:
+        problems.append("Aufgabe ist nicht versteckt.")
+    if info["multiple_instances"] != "IgnoreNew":
+        problems.append("Parallele Instanzen sind nicht ausgeschlossen.")
+    command = str(info["command"] or "")
+    if not command or not os.path.exists(command):
+        problems.append(f"Programm der Aufgabe existiert nicht: {command}")
+    return problems
+
+
+def uninstall(name: str) -> bool:
+    validate_name(name)
+    if not status(name)["exists"]:
+        return False
+    result = _run(["/Delete", "/TN", name, "/F"])
+    if result.returncode != 0:
+        raise SchedulerError(f"Aufgabe konnte nicht entfernt werden: {_decode(result.stderr or result.stdout).strip()}")
+    return True

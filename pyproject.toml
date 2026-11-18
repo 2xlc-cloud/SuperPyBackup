@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "superpybackup"
+dynamic = ["version"]
+description = "Inkrementelle, versionierte Sicherung der Windows-Benutzerordner (Python-Version von SuperPSBackup)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+build = ["pyinstaller==6.22.3"]
+
+[project.scripts]
+superpybackup = "superpybackup.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "superpybackup.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "exe: Tests der kompilierten EXE (nur wenn dist/ vorhanden ist)",
+    "online: Tests gegen echtes GitHub",
+]
+addopts = "-ra"
