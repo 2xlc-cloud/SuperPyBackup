@@ -489,7 +489,7 @@ def test_faq_examples_are_accepted_by_the_real_command_parser():
     for arguments in examples:
         parser.parse_args(faq.split_arguments(arguments))  # SystemExit bei einem ungueltigen Beispiel
     commands = {faq.split_arguments(a)[2 if a.startswith("--config") else 0] for a in examples}
-    assert {"backup", "list", "restore", "verify", "config", "task", "update", "gui"} <= commands
+    assert {"backup", "list", "restore", "verify", "config", "task", "update", "gui", "cleanup"} <= commands
     actions = {faq.split_arguments(a)[1] for a in examples if a.split()[0] in ("task", "update", "config")}
     assert {"install", "set", "status", "check", "uninstall", "rollback", "init", "show", "validate"} <= actions
 
@@ -507,3 +507,31 @@ def test_faq_tab_copies_commands_to_the_clipboard(app):
     assert "kopiert" in window.status.get().lower()
     window.apply_theme("light")
     window.apply_theme("dark")
+
+
+# Bereinigung --------------------------------------------------------------------------------
+def test_cleanup_button_previews_asks_and_deletes(app, env):
+    from datetime import date, timedelta
+
+    from test_cleanup import backup_days
+
+    backup_days(env, [20, 0])
+    configure(app, env)
+    old = env.snapshot("Daily", f"{date.today() - timedelta(days=20):%Y-%m-%d}")
+    assert old.exists()
+    app.dialogs.answer = False
+    app.btn_cleanup.invoke()
+    app.wait_idle(30)
+    pump(app)
+    assert old.exists() and any(call[0] == "ja/nein" and "Abgelaufener Stand" in call[2] for call in app.dialogs.calls)  # Vorschau + Nein
+    app.dialogs.calls.clear()
+    app.dialogs.answer = True
+    app.btn_cleanup.invoke()
+    app.wait_idle(30)
+    pump(app)
+    assert not old.exists() and "1 entfernt" in app.status.get()
+    app.dialogs.calls.clear()
+    app.btn_cleanup.invoke()  # nichts mehr zu tun
+    app.wait_idle(30)
+    pump(app)
+    assert any(call[0] == "info" and "nichts zu bereinigen" in call[2].lower() for call in app.dialogs.calls)

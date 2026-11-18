@@ -55,7 +55,7 @@ Die Sicherungsstände im Ziel werden dabei **nie** gelöscht.
 
 | Registerkarte | Funktion |
 |---|---|
-| **Sicherung** | Übersicht (Ziel, Quellen, letzter Stand, Windows-Aufgabe), **Jetzt sichern**, **Weiteren Stand anlegen**, **Abbrechen**; Fortschrittsbalken und Live-Protokoll. Die Oberfläche bleibt dabei bedienbar; ein Abbruch hinterlässt keinen unvollständigen Stand |
+| **Sicherung** | Übersicht (Ziel, Quellen, letzter Stand, Windows-Aufgabe), **Jetzt sichern**, **Weiteren Stand anlegen**, **Abbrechen**, **Bereinigen …** (Vorschau, Rückfrage, dann löschen); Fortschrittsbalken und Live-Protokoll. Die Oberfläche bleibt dabei bedienbar; ein Abbruch hinterlässt keinen unvollständigen Stand |
 | **Einstellungen** | Sicherungsziel (Ordner-Auswahl oder UNC-Pfad), Windows-Ordner an/aus, zusätzliche Ordner, Ausschlussmuster, Aufbewahrung, Verhalten, Protokoll, Update-Prüfung. **Speichern** prüft alles und zeigt Fehler verständlich an; die vorige Datei bleibt als `config.json.bak` erhalten |
 | **Wiederherstellung** | Alle Tages-/Monats-/Jahresstände mit Status, Inhalt des Standes als aufklappbarer Baum, Auswahl einzelner Dateien/Ordner, Ziel = Ordner oder ursprünglicher Ort, optional Überschreiben (zweifach bestätigt), **Stand prüfen** |
 | **Aufgabe** | Windows-Aufgabe einrichten/ändern (Verzögerung, tägliche Uhrzeit), prüfen, Status, entfernen |
@@ -71,6 +71,7 @@ Die Sicherungsstände im Ziel werden dabei **nie** gelöscht.
 | `list [--json]` | Alle Stände mit Datum, Status (Complete/Partial/Defekt), Dateizahl, Größe |
 | `restore --dest ZIEL \| --original [--snapshot S] [--category K] [--path P] [--overwrite [--yes]]` | Wiederherstellung (siehe unten) |
 | `verify [--snapshot S]` | Jede Datei eines Standes gegen die gespeicherte SHA-256-Summe prüfen |
+| `cleanup [--dry-run] [--yes] [--partial] [--skip-logs]` | Sicherungsziel bereinigen: Reste abgebrochener Läufe, abgelaufene Stände (Aufbewahrung), alte Protokolle; mit `--partial` auch Teil-Stände. Zeigt erst die Vorschau und löscht nur nach Bestätigung (`--yes` überspringt die Rückfrage, `--dry-run` löscht nie). Der neueste vollständige Stand und defekte Stände bleiben unangetastet; während einer Sicherung passiert nichts |
 | `config init \| show \| validate` | Konfiguration anlegen (überschreibt nie), anzeigen, prüfen |
 | `task install \| set \| status \| check \| uninstall [--name N]` | Windows-Aufgabe verwalten (Name muss mit `SuperPyBackup` beginnen) |
 | `update check \| install [--yes] \| rollback` | Updates prüfen/installieren/zurücknehmen |

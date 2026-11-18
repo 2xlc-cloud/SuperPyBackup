@@ -1,5 +1,5 @@
 """SuperPyBackup: inkrementelle, versionierte Sicherung der Windows-Benutzerordner."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 APP_NAME = "SuperPyBackup"
 REPOSITORY = "2xlc-cloud/SuperPyBackup"

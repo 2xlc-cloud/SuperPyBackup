@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, config as cfgmod, engine, fsutil, restore as restoremod, scheduler, snapshots, updater
+from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, restore as restoremod, scheduler, snapshots, updater
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -196,6 +196,41 @@ def _install_dir() -> str:
     return str(Path(sys.executable).parent)
 
 
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    config = _load_config(args)
+    options = cleanupmod.Options(partial=args.partial, logs=not args.skip_logs)
+    try:
+        plan = cleanupmod.build_plan(config, options)
+    except cleanupmod.CleanupError as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    print(f"Bereinigung, Ziel: {plan.target}")
+    for item in plan.items:
+        detail = f"  {item.files} Dateien, {_human(item.bytes)}" if item.bytes is not None else ""
+        print(f"  [{cleanupmod.KIND_LABELS[item.kind]}] {item.label}{detail}")
+    for note in plan.notes:
+        print(f"  Hinweis: {note}")
+    if not plan.items:
+        print("Nichts zu bereinigen.")
+        return 0
+    print(f"{len(plan.items)} Eintraege, Stand-Groesse (logisch) {_human(plan.total_bytes)}; der tatsaechlich frei werdende Platz ist wegen gemeinsamer Dateien (Hardlinks) meist kleiner.")
+    if args.dry_run:
+        print("Nur Vorschau (--dry-run): nichts wurde geloescht.")
+        return 0
+    if not args.yes and not _ask("Jetzt endgueltig loeschen? (j/N): ", ("j", "ja", "y", "yes")):
+        print("Nicht bestaetigt; nichts wurde geloescht. (Mit --yes ohne Rueckfrage.)", file=sys.stderr)
+        return 1
+    try:
+        result = cleanupmod.execute(config, options, echo=None)
+    except cleanupmod.CleanupError as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    print(f"Entfernt: {len(result.removed)}, fehlgeschlagen: {len(result.failed)}")
+    for item, reason in result.failed:
+        print(f"  NICHT ENTFERNT: {item.label}: {reason}", file=sys.stderr)
+    return 1 if result.failed else 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import main_gui
 
@@ -277,6 +312,13 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("action", choices=["check", "install", "rollback"])
     update.add_argument("--yes", action="store_true", help="Installation ohne Rueckfrage bestaetigen")
     update.set_defaults(func=cmd_update)
+
+    cleanup = sub.add_parser("cleanup", help="Sicherungsziel bereinigen (Reste, abgelaufene Staende, alte Protokolle)")
+    cleanup.add_argument("--dry-run", action="store_true", help="nur anzeigen, was entfernt wuerde")
+    cleanup.add_argument("--yes", action="store_true", help="ohne Rueckfrage loeschen")
+    cleanup.add_argument("--partial", action="store_true", help="auch Teil-Staende (Status Partial) entfernen")
+    cleanup.add_argument("--skip-logs", action="store_true", help="alte Protokolle nicht entfernen")
+    cleanup.set_defaults(func=cmd_cleanup)
 
     gui = sub.add_parser("gui", help="Grafische Oberflaeche oeffnen (ohne Argumente startet SuperPyBackup.exe ebenfalls die Oberflaeche)")
     gui.set_defaults(func=cmd_gui)

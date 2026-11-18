@@ -192,3 +192,15 @@ def test_cmd_exe_gui_command_opens_the_gui(env):
     env.write_config_file()
     windows, running = _open_gui_and_kill([str(CMD_EXE), "--config", str(env.root / "config.json"), "gui"], clean_env(env))
     assert running and windows
+
+def test_exe_cleanup_dry_run_and_confirmation(env):
+    write_tree(env.src, {"a.txt": "a"})
+    env.write_config_file()
+    assert run_exe(CMD_EXE, env, "backup").returncode == 0
+    (env.target / ".incomplete-rest" / "x").mkdir(parents=True)
+    preview = run_exe(CMD_EXE, env, "cleanup", "--dry-run")
+    assert preview.returncode == 0 and ".incomplete-rest" in preview.stdout and (env.target / ".incomplete-rest").exists()
+    refused = run_exe(CMD_EXE, env, "cleanup", stdin=subprocess.DEVNULL)
+    assert refused.returncode == 1 and (env.target / ".incomplete-rest").exists()
+    done = run_exe(CMD_EXE, env, "cleanup", "--yes")
+    assert done.returncode == 0 and "Entfernt: 1" in done.stdout and not (env.target / ".incomplete-rest").exists()

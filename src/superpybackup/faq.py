@@ -40,6 +40,13 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("An den ursprünglichen Ort", "Schreibt die Dateien dorthin zurück, wo sie gesichert wurden. Vorhandene Dateien werden nicht überschrieben.", "restore --snapshot latest --original"),
         ("Vorhandene Dateien ersetzen", "Mit --overwrite werden vorhandene Dateien ersetzt; --yes beantwortet die Sicherheitsfrage vorab. Nur gezielt einsetzen.", "restore --snapshot latest --original --overwrite --yes"),
     ]),
+    ("Bereinigung", [
+        ("Vorschau der Bereinigung", "Zeigt, was entfernt würde: Reste abgebrochener Läufe, abgelaufene Stände (Aufbewahrung 7/12/5), alte Protokolle. Es wird nichts gelöscht.", "cleanup --dry-run"),
+        ("Bereinigen", "Zeigt die Vorschau und löscht nach Rückfrage. Der neueste vollständige Stand bleibt immer erhalten; defekte Stände werden nur gemeldet.", "cleanup"),
+        ("Ohne Rückfrage bereinigen", "Für Skripte: löscht ohne Rückfrage. Während einer laufenden Sicherung passiert nichts.", "cleanup --yes"),
+        ("Auch Teil-Stände entfernen", "Entfernt zusätzlich Stände mit Status Partial (Sicherung mit Dateifehlern).", "cleanup --partial --dry-run"),
+        ("Protokolle behalten", "Lässt alte Protokolldateien aus.", "cleanup --skip-logs"),
+    ]),
     ("Windows-Aufgabe", [
         ("Aufgabe einrichten", "Legt die versteckte Aufgabe an: Start 2 Minuten nach der Anmeldung, ohne Administratorrechte.", "task install"),
         ("Andere Wartezeit", "Wartezeit in Minuten nach der Anmeldung.", "task install --delay 5"),

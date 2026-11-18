@@ -48,6 +48,6 @@ Grundlage ist die Analyse des PowerShell-Projekts `SuperPSBackup` (Stand 1.1.0, 
 * **Teil-Stände (`Partial`)**: Ein Lauf mit Dateifehlern erzeugt einen eigenen, im Manifest als `Partial` markierten Stand (`Daily/<Datum>_<Zeit>_<ID>`). Er wird in `list` klar als unvollständig angezeigt, ist nie Grundlage für Hardlink-Wiederverwendung, wird nie zum Tages-/Monats-/Jahresstand befördert und löst keine Rotation aus. Der Prozess endet mit Exit-Code 2.
 * **Änderungserkennung per Metadaten** (Größe + `mtime_ns`) als Standard; `change_detection: "hash"` stellt das Verhalten der Referenz her.
 * **Gesicherte Dateien schreibgeschützt** (Hardlink-Schutz); Wiederherstellung setzt die Originalattribute.
-* **Zusätzliche Befehle**: `list`, `verify`, `config`, `task status`, `update rollback`.
+* **Zusätzliche Befehle**: `list`, `verify`, `config`, `task status`, `update rollback`, `cleanup` (Bereinigung mit Vorschau und Bestätigung; auch in der Oberfläche).
 * **Wiederherstellung** kennt neben Kategorien auch einzelne Dateien/Unterordner und den ursprünglichen Speicherort.
 * **Update** per GitHub-Release-Dateien (`SuperPyBackup.exe`, `SuperPyBackupCmd.exe`, `SHA256SUMS.txt`) statt Skript-Dateiliste; Hash schützt vor Beschädigung, nicht vor einem kompromittierten Repository (keine Codesignatur).

@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, config as cfgmod, engine, faq, fsutil, manifest as mf, restore as restoremod, scheduler, snapshots, updater, winapi
+from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, restore as restoremod, scheduler, snapshots, updater, winapi
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -279,6 +279,8 @@ class App(tk.Tk):
         self.btn_backup_new.pack(side="left", padx=8)
         self.btn_cancel = ttk.Button(buttons, text="Abbrechen", command=self.cancel_backup, state="disabled")
         self.btn_cancel.pack(side="left")
+        self.btn_cleanup = ttk.Button(buttons, text="Bereinigen …", command=self.start_cleanup)
+        self.btn_cleanup.pack(side="right")
         self.progress = ttk.Progressbar(tab, mode="determinate", maximum=100)
         self.progress.pack(fill="x")
         self.progress_label = ttk.Label(tab, text="", style="Sub.TLabel")
@@ -592,7 +594,7 @@ class App(tk.Tk):
 
     def _set_busy_state(self, running: bool) -> None:
         state = "disabled" if running else "normal"
-        for button in (self.btn_backup, self.btn_backup_new, self.btn_restore, self.btn_save, self.btn_verify):
+        for button in (self.btn_backup, self.btn_backup_new, self.btn_restore, self.btn_save, self.btn_verify, self.btn_cleanup):
             button.configure(state=state)
         self.btn_cancel.configure(state="normal" if running and self._backup_running else "disabled")
 
@@ -804,6 +806,57 @@ class App(tk.Tk):
         self.set_status(text.splitlines()[0])
         self.snapshot_refs = {}
         self.refresh_summary()
+
+    def start_cleanup(self) -> None:
+        """Bereinigung: erst Vorschau (nichts wird geloescht), dann Rueckfrage, dann Loeschen unter der Sicherungssperre."""
+        if self._backup_running or self._ops:
+            return
+        config = self._loaded_config_with_target()
+        if config is None:
+            return
+        options = cleanupmod.Options()
+        self._set_busy_state(True)
+        self.set_status("Bereinigung wird vorbereitet ...")
+
+        def planned(plan: cleanupmod.Plan | None, error: BaseException | None) -> None:
+            self._set_busy_state(False)
+            if error:
+                self.error("Bereinigung nicht möglich", str(error))
+                self.set_status("Bereinigung nicht möglich.")
+                return
+            if not plan.items:
+                self.info("Bereinigung", "Es gibt nichts zu bereinigen." + "".join("\n\n" + note for note in plan.notes))
+                self.set_status("Nichts zu bereinigen.")
+                return
+            counts: dict[str, int] = {}
+            for item in plan.items:
+                counts[item.kind] = counts.get(item.kind, 0) + 1
+            lines = [f"{count} × {cleanupmod.KIND_LABELS[kind]}" for kind, count in counts.items()]
+            text = "Folgendes wird endgültig gelöscht:\n\n" + "\n".join(lines)
+            text += f"\n\nGröße der Stände (logisch): {_human(plan.total_bytes)}\nDer tatsächlich frei werdende Platz ist meist kleiner (gemeinsame Dateien)."
+            if plan.notes:
+                text += "\n\nHinweise:\n" + "\n".join(plan.notes)
+            if not self.ask_yes_no("Bereinigen", text + "\n\nJetzt löschen?"):
+                self.set_status("Bereinigung abgebrochen.")
+                return
+            self._set_busy_state(True)
+            self.set_status("Bereinigung läuft ...")
+            self.run_async(lambda: cleanupmod.execute(config, options), executed, op=True)
+
+        def executed(result: cleanupmod.Result | None, error: BaseException | None) -> None:
+            self._set_busy_state(False)
+            if error:
+                self.error("Bereinigung nicht möglich", str(error))
+                self.set_status("Bereinigung nicht möglich.")
+                return
+            text = f"Bereinigung: {len(result.removed)} entfernt, {len(result.failed)} fehlgeschlagen."
+            if result.failed:
+                details = "\n".join(f"{item.label}: {reason}" for item, reason in result.failed[:8])
+                self.error("Bereinigung", text + "\n\n" + details)
+            self.set_status(text)
+            self.refresh_summary()
+
+        self.run_async(lambda: cleanupmod.build_plan(config, options), planned, op=True)
 
     def cancel_backup(self) -> None:
         if self._backup_running:

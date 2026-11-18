@@ -77,16 +77,23 @@ def apply_retention(target: str, sid: str, as_of: date, daily: int, monthly: int
             expired = [item for item in expired if item is not ref]
     removed: list[str] = []
     for ref in expired:
-        hidden = os.path.join(target, snapshots.DELETE_PREFIX + fsutil.new_id(16))
-        try:
-            fsutil.rename_with_retry(ref.path, hidden)  # sofort kein gueltiger Stand mehr
-        except OSError as error:
-            log.warn(f"Aufbewahrung: {ref.spec} konnte nicht entfernt werden: {error}")
-            continue
-        try:
-            fsutil.remove_tree_safe(hidden)
+        if remove_snapshot(target, ref, log):
             removed.append(ref.spec)
-            log.info(f"Abgelaufenen Stand entfernt: {ref.spec}")
-        except OSError as error:
-            log.warn(f"Aufbewahrung: Reste von {ref.spec} bleiben in {os.path.basename(hidden)} und werden beim naechsten Lauf bereinigt: {error}")
     return removed
+
+
+def remove_snapshot(target: str, ref: snapshots.SnapshotRef, log: RunLog, reason: str = "Abgelaufenen Stand") -> bool:
+    """Entfernt einen Stand: erst umbenennen (sofort kein gueltiger Stand mehr), dann loeschen. True = vollstaendig entfernt."""
+    hidden = os.path.join(target, snapshots.DELETE_PREFIX + fsutil.new_id(16))
+    try:
+        fsutil.rename_with_retry(ref.path, hidden)
+    except OSError as error:
+        log.warn(f"Aufbewahrung: {ref.spec} konnte nicht entfernt werden: {error}")
+        return False
+    try:
+        fsutil.remove_tree_safe(hidden)
+        log.info(f"{reason} entfernt: {ref.spec}")
+        return True
+    except OSError as error:
+        log.warn(f"Aufbewahrung: Reste von {ref.spec} bleiben in {os.path.basename(hidden)} und werden beim naechsten Lauf bereinigt: {error}")
+        return False

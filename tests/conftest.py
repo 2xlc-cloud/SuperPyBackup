@@ -66,7 +66,7 @@ class Env:
         env = dict(os.environ, PYTHONPATH=str(ROOT / "src"), SUPERPYBACKUP_HOME=str(self.home))
         if extra_env:
             env.update(extra_env)
-        return subprocess.run([sys.executable, "-m", "superpybackup", "--config", str(self.root / "config.json"), *args], capture_output=True, text=True, env=env, timeout=timeout)
+        return subprocess.run([sys.executable, "-m", "superpybackup", "--config", str(self.root / "config.json"), *args], capture_output=True, text=True, env=env, timeout=timeout, stdin=subprocess.DEVNULL)
 
 
 @pytest.fixture

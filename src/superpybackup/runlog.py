@@ -93,7 +93,7 @@ class RunLog:
     def error(self, message: str) -> None:
         self.write("ERROR", message)
 
-    def prune(self, keep_days: int, today: date | None = None) -> list[str]:
+    def prune(self, keep_days: int, today: date | None = None, *, dry_run: bool = False) -> list[str]:
         """Entfernt Protokolle, die aelter als keep_days Kalendertage sind. Liefert die entfernten Dateien."""
         today = today or date.today()
         cutoff = today - timedelta(days=keep_days - 1)
@@ -113,7 +113,8 @@ class RunLog:
                 continue
             try:
                 if datetime.strptime(match.group(1), "%Y-%m-%d").date() < cutoff:
-                    os.remove(fsutil.fs(os.path.join(self.directory, name)))
+                    if not dry_run:
+                        os.remove(fsutil.fs(os.path.join(self.directory, name)))
                     removed.append(name)
             except (OSError, ValueError):
                 continue
