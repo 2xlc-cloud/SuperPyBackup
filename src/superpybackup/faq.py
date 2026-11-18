@@ -24,6 +24,8 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("Sicherung", [
         ("Sicherung starten", "Legt den Tagesstand an. Gibt es heute schon einen vollständigen Stand, passiert nichts (AlreadyComplete).", "backup"),
         ("Weiteren Stand anlegen", "Erzwingt einen zusätzlichen Stand, auch wenn heute schon einer existiert.", "backup --new-snapshot"),
+        ("Vollsicherung erzwingen", "Kopiert alle Dateien neu, ohne Hardlinks zum Vorgänger: ein eigenständiger Stand. Legt auch bei vorhandenem Tagesstand einen weiteren an.", "backup --full"),
+        ("Inkrement erzwingen", "Kopiert nur Geändertes, Unverändertes wird per Hardlink übernommen. Ohne Vorgänger wird trotzdem voll gesichert. Ohne Option entscheidet die Einstellung backup.full_every_days (Standard: alle 7 Tage voll).", "backup --incremental"),
         ("Ohne Ausgabe", "Für geplante Aufgaben: keine Konsolenausgabe, Ergebnis nur im Protokoll und im Rückgabewert (0 = vollstaendig, 2 = Teil-Stand, 1 = Fehler).", "backup --quiet"),
     ]),
     ("Stände ansehen und prüfen", [

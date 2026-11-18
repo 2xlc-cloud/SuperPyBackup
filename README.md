@@ -7,7 +7,8 @@ voneinander installier- und betreibbar; SuperPyBackup verändert SuperPSBackup n
 * Windows 10/11, keine Administratorrechte, **keine Python-Installation beim Anwender** (fertige EXE-Dateien)
 * Sicherung nach `Desktop`, `Dokumente`, `Bilder`, `Musik`, `Videos`, `Downloads`, `Favoriten` (Windows-Known-Folders, inkl. Umleitung/OneDrive) plus eigene Ordner
 * Normale Dateien im Ziel (kein Archivformat): Jeder Stand ist ein Ordner, den man im Explorer öffnen kann
-* Unveränderte Dateien werden per NTFS-Hardlink wiederverwendet – nur Neues/Geändertes belegt Speicher
+* Unveränderte Dateien werden per NTFS-Hardlink wiederverwendet – nur Neues/Geändertes belegt Speicher (**Inkrement**)
+* Zusätzlich **Vollsicherungen**: alle Dateien werden neu kopiert, der Stand ist eigenständig und hängt an keinem Vorgänger – automatisch alle 7 Tage (einstellbar) oder auf Wunsch
 * Aufbewahrung 7 Tage / 12 Monate / 5 Jahre, Wiederherstellung (Datei, Ordner, ursprünglicher Ort), Windows-Aufgabe, GitHub-Update
 
 ## Programme
@@ -67,7 +68,7 @@ Die Sicherungsstände im Ziel werden dabei **nie** gelöscht.
 
 | Befehl | Wirkung |
 |---|---|
-| `backup [--new-snapshot] [--quiet]` | Sicherung ausführen. Exit-Code 0 = vollständig/bereits vorhanden/anderer Lauf aktiv, **2 = Teil-Stand**, 1 = Fehler |
+| `backup [--full \| --incremental] [--new-snapshot] [--quiet]` | Sicherung ausführen. `--full` erzwingt eine eigenständige Vollsicherung (legt auch bei vorhandenem Tagesstand einen weiteren Stand an), `--incremental` ein Inkrement; ohne Option entscheidet `backup.full_every_days`. Exit-Code 0 = vollständig/bereits vorhanden/anderer Lauf aktiv, **2 = Teil-Stand**, 1 = Fehler |
 | `list [--json]` | Alle Stände mit Datum, Status (Complete/Partial/Defekt), Dateizahl, Größe |
 | `restore --dest ZIEL \| --original [--snapshot S] [--category K] [--path P] [--overwrite [--yes]]` | Wiederherstellung (siehe unten) |
 | `verify [--snapshot S]` | Jede Datei eines Standes gegen die gespeicherte SHA-256-Summe prüfen |
@@ -94,7 +95,8 @@ Globale Option: `--config PFAD` (Standard `%LOCALAPPDATA%\SuperPyBackup\config.j
   "backup": {
     "existing_daily": "skip",               // "skip": heute schon gesichert -> nichts tun | "new_snapshot": weiteren Stand anlegen
     "change_detection": "metadata",         // "metadata": Größe+Zeitstempel (schnell) | "hash": jede Datei lesen und SHA-256 vergleichen
-    "use_hardlinks": true,                  // false: unveränderte Dateien werden kopiert
+    "use_hardlinks": true,                  // false: unveränderte Dateien werden kopiert (dann ist jeder Stand eine Vollsicherung)
+    "full_every_days": 7,                   // alle N Tage eine Vollsicherung statt Inkrement; 0 = nie automatisch
     "free_space_margin_percent": 5, "min_free_bytes": 0
   },
   "logging": { "directory": "", "keep_days": 30, "max_file_mb": 20 },   // leer = %LOCALAPPDATA%\SuperPyBackup\Logs

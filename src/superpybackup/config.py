@@ -59,6 +59,7 @@ DEFAULTS: dict[str, Any] = {
         "existing_daily": "skip",
         "change_detection": "metadata",
         "use_hardlinks": True,
+        "full_every_days": 7,
         "free_space_margin_percent": 5,
         "min_free_bytes": 0,
     },
@@ -212,6 +213,7 @@ def validate(data: dict[str, Any], *, require_target: bool = True) -> list[Sourc
         problems.append(f"'backup.change_detection' muss {' oder '.join(CHANGE_DETECTION)} sein (gefunden: {backup['change_detection']!r}).")
     if not isinstance(backup["use_hardlinks"], bool):
         problems.append("'backup.use_hardlinks' muss true oder false sein.")
+    _int(backup["full_every_days"], "backup.full_every_days", 0, 3650, problems)
     _int(backup["free_space_margin_percent"], "backup.free_space_margin_percent", 0, 100, problems)
     _int(backup["min_free_bytes"], "backup.min_free_bytes", 0, 1 << 50, problems)
     logging_cfg = data["logging"]

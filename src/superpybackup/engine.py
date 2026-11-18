@@ -1,4 +1,4 @@
-"""Backup-Engine: inkrementelle, transaktionssichere Sicherung mit Hardlinks.
+"""Backup-Engine: transaktionssichere Sicherung (Vollsicherung oder Inkrement) mit Hardlinks.
 
 Ablauf eines Laufs
   1. Vorabpruefungen (Ziel, Quellen, Lock, Schreibprobe)
@@ -29,6 +29,8 @@ PARTIAL = "Partial"
 ALREADY = "AlreadyComplete"
 BUSY = "Busy"
 FAILED = "Failed"
+FULL = "Full"  # eigenstaendiger Stand: alle Dateien neu kopiert, keine Hardlinks zum Vorgaenger
+INCREMENTAL = "Incremental"  # nur Geaendertes wird kopiert, Unveraendertes per Hardlink uebernommen
 EXIT_CODES = {COMPLETE: 0, ALREADY: 0, BUSY: 0, PARTIAL: 2, FAILED: 1}
 
 
@@ -61,6 +63,7 @@ class RunResult:
     seconds: float = 0.0
     stats: Stats = field(default_factory=Stats)
     log_path: str = ""
+    kind: str = ""  # FULL oder INCREMENTAL (leer, wenn kein Stand angelegt wurde)
 
     @property
     def exit_code(self) -> int:
@@ -240,6 +243,25 @@ def ensure_archive(target: str, tier: str, name: str, source_dir: str, manifest:
                 log.warn(f"Arbeitsordner konnte nicht entfernt werden: {stage}: {error}")
 
 
+def decide_kind(requested: str | None, base: snapshots.SnapshotRef | None, last_full: snapshots.SnapshotRef | None, day: str, full_every_days: int, use_links: bool) -> tuple[str, str]:
+    """Bestimmt die Art des Laufs und nennt den Grund. requested: FULL, INCREMENTAL oder None (automatisch)."""
+    if requested == FULL:
+        return FULL, "Vollsicherung angefordert"
+    if base is None:
+        return FULL, "kein Vorgaengerstand vorhanden"
+    if not use_links:
+        return FULL, "ohne Hardlinks wird immer vollstaendig kopiert"
+    if requested == INCREMENTAL:
+        return INCREMENTAL, "Inkrement angefordert"
+    if full_every_days > 0:
+        if last_full is None:
+            return FULL, "noch keine Vollsicherung vorhanden"
+        age = (date.fromisoformat(day) - date.fromisoformat(last_full.name[:10])).days
+        if age >= full_every_days:
+            return FULL, f"letzte Vollsicherung vor {age} Tagen (Einstellung: alle {full_every_days} Tage)"
+    return INCREMENTAL, "Vollsicherung noch nicht faellig" if full_every_days > 0 else "automatische Vollsicherung ist aus"
+
+
 def _check_cancel(cancel) -> None:
     if cancel is not None and cancel.is_set():
         raise BackupError("Die Sicherung wurde abgebrochen; es wurde kein neuer Stand angelegt.")
@@ -252,9 +274,10 @@ def _test_delay() -> float:
         return 0.0
 
 
-def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snapshot: bool | None = None, identity: Identity | None = None, echo=None, progress=None, cancel=None) -> RunResult:
+def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snapshot: bool | None = None, mode: str | None = None, identity: Identity | None = None, echo=None, progress=None, cancel=None) -> RunResult:
     """Fuehrt einen Sicherungslauf aus. Wirft nie fuer erwartbare Fehler, sondern liefert Status Failed.
 
+    mode: FULL oder INCREMENTAL erzwingt die Art des Stands, None entscheidet nach `backup.full_every_days`.
     progress(phase, erledigt, gesamt, text) meldet den Fortschritt (Phasen: scan, copy); cancel ist ein threading.Event,
     mit dem ein Lauf sauber abgebrochen werden kann (Arbeitsordner wird entfernt, es entsteht kein Stand).
     """
@@ -321,7 +344,11 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
         _stage_cleanup(target, log)
 
         day = as_of.strftime("%Y-%m-%d")
+        if mode not in (None, FULL, INCREMENTAL):
+            raise BackupError(f"Unbekannte Art der Sicherung: {mode!r}")
         make_new = (config.backup["existing_daily"] == "new_snapshot") if new_snapshot is None else new_snapshot
+        if mode == FULL and new_snapshot is None:
+            make_new = True  # eine ausdruecklich angeforderte Vollsicherung wird auch bei vorhandenem Tagesstand angelegt
         refs = snapshots.list_snapshots(target, identity.sid, ("Daily",))
         for ref in refs:
             if ref.manifest is None:
@@ -342,21 +369,25 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
         base = snapshots.latest_complete(target, identity.sid, "Daily", day)
         previous_index = base.manifest.index() if base else {}
         log.info(f"Basis fuer unveraenderte Dateien: {base.spec if base else 'keine (vollstaendige Sicherung)'}")
+        last_full = snapshots.latest_full(target, identity.sid, day)
 
         excluded = build_excluder(config.excludes)
         if progress:
             progress('scan', 0, 0, 'Quellen werden durchsucht ...')
         files, directories, categories, scan_errors = scan_sources(sources, excluded, log, stats, cancel)
         errors = list(scan_errors)
-        mode = config.backup["change_detection"]
+        detection = config.backup["change_detection"]
         use_links = config.backup["use_hardlinks"] and winapi.volume_supports_hardlinks(target)
         if config.backup["use_hardlinks"] and not use_links:
             log.warn("Das Sicherungsziel unterstuetzt keine Hardlinks; unveraenderte Dateien werden kopiert.")
+        kind, why = decide_kind(mode, base, last_full, day, config.backup["full_every_days"], use_links)
+        result.kind = kind
+        log.info(f"Art der Sicherung: {'Vollsicherung' if kind == FULL else 'Inkrement'} ({why})")
         plan: list[tuple[FileInfo, mf.FileEntry | None, bool]] = []
         needed = 0
         for info in files:
             old = previous_index.get(info.key)
-            unchanged = old is not None and old.size == info.size and old.mtime_ns == info.mtime_ns
+            unchanged = kind == INCREMENTAL and old is not None and old.size == info.size and old.mtime_ns == info.mtime_ns
             plan.append((info, old, unchanged))
             if not unchanged or not use_links:
                 needed += info.size
@@ -382,7 +413,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
                 if delay:
                     time.sleep(delay)
                 if unchanged and use_links and old is not None:
-                    if mode == "hash" and fsutil.hash_file(info.path) != old.sha256:
+                    if detection == "hash" and fsutil.hash_file(info.path) != old.sha256:
                         unchanged = False
                     else:
                         previous_file = fsutil.safe_join(base.path, info.key)
@@ -439,7 +470,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             directories=directories,
             files=entries,
             errors=errors,
-            stats={"scanned": stats.scanned, "new": stats.new, "modified": stats.modified, "unchanged": stats.unchanged, "skipped": stats.skipped, "errors": stats.errors, "bytes_transferred": stats.bytes_transferred, "total_bytes": stats.total_bytes},
+            stats={"type": kind, "scanned": stats.scanned, "new": stats.new, "modified": stats.modified, "unchanged": stats.unchanged, "skipped": stats.skipped, "errors": stats.errors, "bytes_transferred": stats.bytes_transferred, "total_bytes": stats.total_bytes},
         )
         mf.save(stage, manifest)
         daily_dir = os.path.join(target, "Daily")
@@ -486,7 +517,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
         result.seconds = time.perf_counter() - started
         try:
             log.info(
-                f"Ende Status={result.status} Dauer={result.seconds:.2f}s Gescannt={stats.scanned} Neu={stats.new} Geaendert={stats.modified} "
+                f"Ende Status={result.status} Art={result.kind or '-'} Dauer={result.seconds:.2f}s Gescannt={stats.scanned} Neu={stats.new} Geaendert={stats.modified} "
                 f"Unveraendert={stats.unchanged} Ausgelassen={stats.skipped} Fehler={stats.errors} Uebertragen={stats.bytes_transferred}B "
                 f"Gesamt={stats.total_bytes}B ZusaetzlicherSpeicher={stats.extra_storage_bytes}B Entfernt={len(stats.retention_removed)} "
                 f"Warnungen={log.warnings}"

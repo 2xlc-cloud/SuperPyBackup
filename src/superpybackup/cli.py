@@ -45,12 +45,15 @@ def _log(config: cfgmod.Config, *, quiet: bool = False) -> RunLog:
 
 def cmd_backup(args: argparse.Namespace) -> int:
     config = _load_config(args)
-    result = engine.run_backup(config, new_snapshot=True if args.new_snapshot else None, echo=None if args.quiet else sys.stdout)
+    mode = engine.FULL if args.full else engine.INCREMENTAL if args.incremental else None
+    result = engine.run_backup(config, new_snapshot=True if args.new_snapshot else None, mode=mode, echo=None if args.quiet else sys.stdout)
     stats = result.stats
     if not args.quiet:
         print(f"\nStatus: {result.status}" + (f" - {result.message}" if result.message else ""))
         if result.snapshot_path:
             print(f"Stand: {result.snapshot_path}")
+        if result.kind:
+            print("Art: " + ("Vollsicherung" if result.kind == engine.FULL else "Inkrement"))
         print(f"Gescannt {stats.scanned} | neu {stats.new} | geaendert {stats.modified} | unveraendert {stats.unchanged} | ausgelassen {stats.skipped} | Fehler {stats.errors}")
         print(f"Uebertragen {_human(stats.bytes_transferred)} | Gesamt {_human(stats.total_bytes)} | zusaetzlicher Speicher {_human(stats.extra_storage_bytes)} | {result.seconds:.1f} s")
     if result.status != engine.BUSY:
@@ -274,6 +277,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     backup = sub.add_parser("backup", help="Sicherung ausfuehren")
     backup.add_argument("--new-snapshot", action="store_true", help="auch bei vorhandenem Tagesstand einen weiteren Stand anlegen")
+    kind_group = backup.add_mutually_exclusive_group()
+    kind_group.add_argument("--full", action="store_true", help="Vollsicherung erzwingen: alle Dateien neu kopieren, eigenstaendiger Stand (legt auch bei vorhandenem Tagesstand einen weiteren an)")
+    kind_group.add_argument("--incremental", action="store_true", help="Inkrement erzwingen: nur Geaendertes kopieren, Unveraendertes per Hardlink (ohne Vorgaenger wird trotzdem voll gesichert)")
     backup.add_argument("--quiet", action="store_true", help="keine Ausgabe (fuer die geplante Aufgabe)")
     backup.set_defaults(func=cmd_backup)
 

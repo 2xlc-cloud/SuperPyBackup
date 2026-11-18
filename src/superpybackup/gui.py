@@ -277,6 +277,8 @@ class App(tk.Tk):
         self.btn_backup.pack(side="left")
         self.btn_backup_new = ttk.Button(buttons, text="Weiteren Stand anlegen", command=lambda: self.start_backup(True))
         self.btn_backup_new.pack(side="left", padx=8)
+        self.btn_backup_full = ttk.Button(buttons, text="Vollsicherung", command=lambda: self.start_backup(True, engine.FULL))
+        self.btn_backup_full.pack(side="left")
         self.btn_cancel = ttk.Button(buttons, text="Abbrechen", command=self.cancel_backup, state="disabled")
         self.btn_cancel.pack(side="left")
         self.btn_cleanup = ttk.Button(buttons, text="Bereinigen …", command=self.start_cleanup)
@@ -352,6 +354,12 @@ class App(tk.Tk):
         ttk.Combobox(box, textvariable=self.var_change, values=list(CHANGE_LABELS.values()), state="readonly", width=34).grid(row=1, column=1, sticky="w", padx=8, pady=2)
         self.var_hardlinks = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="Unveränderte Dateien per NTFS-Hardlink wiederverwenden (spart Speicher)", variable=self.var_hardlinks).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+        self.var_full_days = tk.StringVar(value="7")
+        full_row = ttk.Frame(box)
+        full_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(full_row, text="Vollsicherung automatisch alle").pack(side="left")
+        ttk.Spinbox(full_row, from_=0, to=3650, width=6, textvariable=self.var_full_days).pack(side="left", padx=6)
+        ttk.Label(full_row, text="Tage (0 = nur Inkremente; dazwischen wird nur Geändertes kopiert)").pack(side="left")
         # Protokoll + Update
         box = ttk.LabelFrame(body, text="Protokoll und Updates", padding=10)
         box.grid(row=5, column=0, sticky="ew", **pad)
@@ -594,7 +602,7 @@ class App(tk.Tk):
 
     def _set_busy_state(self, running: bool) -> None:
         state = "disabled" if running else "normal"
-        for button in (self.btn_backup, self.btn_backup_new, self.btn_restore, self.btn_save, self.btn_verify, self.btn_cleanup):
+        for button in (self.btn_backup, self.btn_backup_new, self.btn_backup_full, self.btn_restore, self.btn_save, self.btn_verify, self.btn_cleanup):
             button.configure(state=state)
         self.btn_cancel.configure(state="normal" if running and self._backup_running else "disabled")
 
@@ -638,6 +646,7 @@ class App(tk.Tk):
         self.var_existing.set(EXISTING_LABELS[data["backup"]["existing_daily"]])
         self.var_change.set(CHANGE_LABELS[data["backup"]["change_detection"]])
         self.var_hardlinks.set(data["backup"]["use_hardlinks"])
+        self.var_full_days.set(str(data["backup"]["full_every_days"]))
         self.var_log_dir.set(data["logging"]["directory"])
         self.var_log_days.set(str(data["logging"]["keep_days"]))
         self.var_check_updates.set(data["update"]["check_for_updates"])
@@ -661,6 +670,7 @@ class App(tk.Tk):
         data["backup"]["existing_daily"] = next(key for key, label in EXISTING_LABELS.items() if label == self.var_existing.get())
         data["backup"]["change_detection"] = next(key for key, label in CHANGE_LABELS.items() if label == self.var_change.get())
         data["backup"]["use_hardlinks"] = self.var_hardlinks.get()
+        data["backup"]["full_every_days"] = number(self.var_full_days, "Vollsicherung alle (Tage)")
         data["logging"]["directory"] = self.var_log_dir.get().strip()
         data["logging"]["keep_days"] = number(self.var_log_days, "Protokolle behalten (Tage)")
         data["update"]["check_for_updates"] = self.var_check_updates.get()
@@ -757,7 +767,7 @@ class App(tk.Tk):
             return None
         return config
 
-    def start_backup(self, new_snapshot: bool) -> None:
+    def start_backup(self, new_snapshot: bool, mode: str | None = None) -> None:
         if self._backup_running:
             return
         if self._ops:
@@ -778,7 +788,7 @@ class App(tk.Tk):
         def on_progress(phase: str, done: int, total: int, text: str) -> None:
             self._progress = (phase, done, total, text)
 
-        self.run_async(lambda: engine.run_backup(config, new_snapshot=True if new_snapshot else None, echo=writer, progress=on_progress, cancel=self._cancel), self._backup_done, op=True)
+        self.run_async(lambda: engine.run_backup(config, new_snapshot=True if new_snapshot else None, mode=mode, echo=writer, progress=on_progress, cancel=self._cancel), self._backup_done, op=True)
 
     def _backup_done(self, result: engine.RunResult | None, error: BaseException | None) -> None:
         self._backup_running = False
@@ -801,6 +811,8 @@ class App(tk.Tk):
         }[result.status]
         if result.message:
             text += f"  {result.message}"
+        if result.kind:
+            text += " (" + ("Vollsicherung" if result.kind == engine.FULL else "Inkrement") + ")"
         text += f"\nNeu {stats.new}, geändert {stats.modified}, unverändert {stats.unchanged}, ausgelassen {stats.skipped}, Fehler {stats.errors} | übertragen {_human(stats.bytes_transferred)}, gesamt {_human(stats.total_bytes)} | {result.seconds:.1f} s"
         self.result_label.configure(text=text, style="Ok.TLabel" if result.status in (engine.COMPLETE, engine.ALREADY) else "Bad.TLabel" if result.status in (engine.FAILED, engine.PARTIAL) else "TLabel")
         self.set_status(text.splitlines()[0])

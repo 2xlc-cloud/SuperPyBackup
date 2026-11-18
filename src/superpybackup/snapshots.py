@@ -66,6 +66,17 @@ def latest_complete(target: str, sid: str | None, tier: str = "Daily", on_or_bef
     return None
 
 
+def latest_full(target: str, sid: str | None, on_or_before: str | None = None) -> SnapshotRef | None:
+    """Neuester vollstaendiger Tagesstand, der als Vollsicherung angelegt wurde (stats.type == Full)."""
+    for ref in list_snapshots(target, sid, ("Daily",)):
+        if ref.manifest is None or ref.manifest.status != mf.COMPLETE or ref.manifest.stats.get("type") != "Full":
+            continue
+        if on_or_before is not None and ref.name[:10] > on_or_before:
+            continue
+        return ref
+    return None
+
+
 def leftover_work_dirs(target: str) -> list[str]:
     result = []
     try:

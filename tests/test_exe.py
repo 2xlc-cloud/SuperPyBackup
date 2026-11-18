@@ -204,3 +204,15 @@ def test_exe_cleanup_dry_run_and_confirmation(env):
     assert refused.returncode == 1 and (env.target / ".incomplete-rest").exists()
     done = run_exe(CMD_EXE, env, "cleanup", "--yes")
     assert done.returncode == 0 and "Entfernt: 1" in done.stdout and not (env.target / ".incomplete-rest").exists()
+
+
+def test_exe_full_and_incremental_backup(env):
+    write_tree(env.src, {"a.txt": "a"})
+    env.write_config_file()
+    first = run_exe(CMD_EXE, env, "backup")
+    assert first.returncode == 0 and "Art: Vollsicherung" in first.stdout, first.stdout + first.stderr
+    incremental = run_exe(CMD_EXE, env, "backup", "--incremental", "--new-snapshot")
+    assert incremental.returncode == 0 and "Art: Inkrement" in incremental.stdout
+    full = run_exe(CMD_EXE, env, "backup", "--full")
+    assert full.returncode == 0 and "Art: Vollsicherung" in full.stdout
+    assert run_exe(CMD_EXE, env, "backup", "--full", "--incremental").returncode != 0
