@@ -7,6 +7,7 @@ import io
 import json
 import os
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -223,6 +224,24 @@ def cmd_restore(args: argparse.Namespace) -> int:
         return 1
     print(f"Wiederhergestellt: {result.copied} Dateien ({_human(result.bytes)}), ausgelassen: {result.skipped}, Fehler: {result.errors}")
     return result.exit_code
+
+
+def cmd_find(args: argparse.Namespace) -> int:
+    config = _load_config(args)
+    target, sid = _target_dir(config)
+    try:
+        versions = restoremod.find_versions(snapshots.list_snapshots(target, sid), args.pattern, limit=args.limit)
+    except restoremod.RestoreError as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    if not versions:
+        print("Keine passende Datei in den Sicherungsstaenden gefunden.")
+        return 1
+    for version in versions:
+        also = f" (+{len(version.also_in)} weitere Staende mit derselben Fassung)" if version.also_in else ""
+        print(f"{version.path} | {version.ref.spec} | {_human(version.entry.size)} | geaendert {time.strftime('%d.%m.%Y %H:%M', time.localtime(version.entry.mtime_ns / 1e9))}{also}")
+    print(f"\n{len(versions)} Fassung(en). Wiederherstellen: restore --snapshot <Stand> --path <Pfad> --dest <Ordner>")
+    return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -542,6 +561,11 @@ def build_parser() -> argparse.ArgumentParser:
     rest.add_argument("--overwrite", action="store_true", help="vorhandene Dateien ersetzen (nur nach Bestaetigung)")
     rest.add_argument("--yes", action="store_true", help="Ueberschreiben ohne Rueckfrage bestaetigen")
     rest.set_defaults(func=cmd_restore)
+
+    find = sub.add_parser("find", help="Datei in allen Sicherungsstaenden suchen (jede unterschiedliche Fassung)")
+    find.add_argument("pattern", help="Teil des Pfades oder Muster mit * und ?, z. B. rechnung oder *.docx")
+    find.add_argument("--limit", type=int, default=200, help="hoechstens so viele Fassungen anzeigen (Standard 200)")
+    find.set_defaults(func=cmd_find)
 
     verify = sub.add_parser("verify", help="Integritaet eines Standes pruefen")
     verify.add_argument("--snapshot", default="latest")

@@ -114,6 +114,10 @@ class App(tk.Tk):
         self._backup_running = False
         self.last_result: engine.RunResult | None = None
         self.last_restore: restoremod.RestoreResult | None = None
+        self.show_preview: Callable[[str, restoremod.Preview], None] = self._show_preview_window  # fuer Tests ersetzbar
+        self._loaded_spec: str | None = None  # Stand, dessen Inhalt gerade im Baum steht
+        self.search_dialog: tk.Toplevel | None = None
+        self.search_results: dict[str, restoremod.FileVersion] = {}
         self.last_update = None
         self.snapshot_refs: dict[str, snapshots.SnapshotRef] = {}
         self._tree_cache: dict | None = None
@@ -479,6 +483,14 @@ class App(tk.Tk):
         ttk.Button(top, text="Aktualisieren", command=self.refresh_snapshots).pack(side="left", padx=8)
         self.btn_verify = ttk.Button(top, text="Ausgewählten Stand prüfen", command=self.verify_selected)
         self.btn_verify.pack(side="left")
+        self.var_search = tk.StringVar()
+        self.btn_preview = ttk.Button(top, text="Vorschau", command=self.preview_selected)
+        self.btn_preview.pack(side="right")
+        self.btn_search = ttk.Button(top, text="In allen Ständen suchen", command=self.search_files)
+        self.btn_search.pack(side="right", padx=(6, 8))
+        search_entry = ttk.Entry(top, textvariable=self.var_search, width=26)
+        search_entry.pack(side="right")
+        search_entry.bind("<Return>", lambda event: self.search_files())
         self.snap_tree = ttk.Treeview(tab, columns=("date", "status", "files", "size"), show="tree headings", height=6, selectmode="browse")
         for column, title, width in (("#0", "Stand", 200), ("date", "Datum", 100), ("status", "Status", 90), ("files", "Dateien", 80), ("size", "Größe", 100)):
             self.snap_tree.heading(column, text=title)
@@ -1473,23 +1485,29 @@ class App(tk.Tk):
         self.set_status("Sicherungsstände werden gelesen ...")
 
         def done(refs: list[snapshots.SnapshotRef] | None, error: BaseException | None) -> None:
-            self.snap_tree.delete(*self.snap_tree.get_children())
-            self.snapshot_refs = {}
             if error:
+                self.snap_tree.delete(*self.snap_tree.get_children())
+                self.snapshot_refs = {}
                 self.error("Stände nicht lesbar", str(error))
                 return
-            labels = {"Daily": "Tagesstände", "Monthly": "Monatsstände", "Yearly": "Jahresstände"}
-            for tier in snapshots.TIERS:
-                group = [ref for ref in refs or [] if ref.tier == tier]
-                parent = self.snap_tree.insert("", "end", iid=f"tier-{tier}", text=f"{labels[tier]} ({len(group)})", open=tier == "Daily")
-                for ref in sorted(group, key=lambda r: r.name, reverse=True):
-                    manifest = ref.manifest
-                    status = "Defekt" if manifest is None else ("Vollständig" if manifest.status == mf.COMPLETE else "Teil-Stand")
-                    self.snapshot_refs[ref.spec] = ref
-                    self.snap_tree.insert(parent, "end", iid=ref.spec, text=ref.name, values=(manifest.date if manifest else "-", status, len(manifest.files) if manifest else "-", _human(manifest.total_bytes) if manifest else "-"))
+            self._fill_snapshot_tree(refs or [])
             self.set_status(f"{len(self.snapshot_refs)} Sicherungsstände gefunden.")
 
         self.run_async(lambda: snapshots.list_snapshots(target, sid), done)
+
+    def _fill_snapshot_tree(self, refs: list[snapshots.SnapshotRef]) -> None:
+        self.snap_tree.delete(*self.snap_tree.get_children())
+        self.snapshot_refs = {}
+        self._loaded_spec = None
+        labels = {"Daily": "Tagesstände", "Monthly": "Monatsstände", "Yearly": "Jahresstände"}
+        for tier in snapshots.TIERS:
+            group = [ref for ref in refs if ref.tier == tier]
+            parent = self.snap_tree.insert("", "end", iid=f"tier-{tier}", text=f"{labels[tier]} ({len(group)})", open=tier == "Daily")
+            for ref in sorted(group, key=lambda r: r.name, reverse=True):
+                manifest = ref.manifest
+                status = "Defekt" if manifest is None else ("Vollständig" if manifest.status == mf.COMPLETE else "Teil-Stand")
+                self.snapshot_refs[ref.spec] = ref
+                self.snap_tree.insert(parent, "end", iid=ref.spec, text=ref.name, values=(manifest.date if manifest else "-", status, len(manifest.files) if manifest else "-", _human(manifest.total_bytes) if manifest else "-"))
 
     def selected_snapshot(self) -> snapshots.SnapshotRef | None:
         selection = self.snap_tree.selection()
@@ -1497,10 +1515,14 @@ class App(tk.Tk):
 
     def load_snapshot_files(self) -> None:
         ref = self.selected_snapshot()
+        if ref is not None and ref.spec == self._loaded_spec and self.file_tree.get_children():
+            return  # derselbe Stand steht schon im Baum (z. B. nach "Zum Wiederherstellen auswählen")
         self.file_tree.delete(*self.file_tree.get_children())
         self._tree_cache, self._tree_manifest = None, None
+        self._loaded_spec = None
         if ref is None or ref.manifest is None:
             return
+        self._loaded_spec = ref.spec
         manifest = ref.manifest
         root: dict = {}
         for directory in manifest.directories:
@@ -1530,7 +1552,9 @@ class App(tk.Tk):
                 self.file_tree.insert(parent_iid, "end", iid=iid, text=name, values=(_human(value),))
 
     def _open_node(self, event: object) -> None:
-        iid = self.file_tree.focus()
+        self._load_node(self.file_tree.focus())
+
+    def _load_node(self, iid: str) -> None:
         children = self.file_tree.get_children(iid)
         if len(children) == 1 and children[0].endswith(DUMMY) and self._tree_cache is not None:
             self.file_tree.delete(children[0])
@@ -1538,6 +1562,188 @@ class App(tk.Tk):
             for part in iid.split("/"):
                 node = node[part]
             self._insert_children(iid, iid + "/", node)
+
+    def select_file_path(self, path: str) -> bool:
+        """Klappt den Baum bis zu `path` auf und wählt die Datei (oder den Ordner) aus."""
+        parts = path.split("/")
+        iid = ""
+        for part in parts[:-1]:
+            iid = part if not iid else f"{iid}/{part}"
+            if not self.file_tree.exists(iid):
+                return False
+            self._load_node(iid)
+            self.file_tree.item(iid, open=True)
+        if not self.file_tree.exists(path):
+            return False
+        self.file_tree.selection_set([path])
+        self.file_tree.focus(path)
+        self.file_tree.see(path)
+        return True
+
+    # ------------------------------------------------------------------ Suche und Vorschau
+    def search_files(self) -> None:
+        """Sucht in allen Ständen (Teil des Pfades oder Muster mit * ?) und zeigt jede unterschiedliche Fassung."""
+        pattern = self.var_search.get().strip()
+        located = self._target_dir()
+        if located is None:
+            return
+        if not pattern:
+            self.info("Suche", "Bitte einen Suchbegriff eingeben, z. B. rechnung oder *.docx.")
+            return
+        target, sid = located
+        self.set_status("Suche in allen Ständen ...")
+
+        def work() -> tuple[list[snapshots.SnapshotRef], list[restoremod.FileVersion]]:
+            refs = snapshots.list_snapshots(target, sid)
+            return refs, restoremod.find_versions(refs, pattern)
+
+        def done(found: tuple[list[snapshots.SnapshotRef], list[restoremod.FileVersion]] | None, error: BaseException | None) -> None:
+            if error or found is None:
+                self.error("Suche", str(error))
+                self.set_status("Suche fehlgeschlagen.")
+                return
+            refs, versions = found
+            self._fill_snapshot_tree(refs)
+            self.file_tree.delete(*self.file_tree.get_children())
+            self.set_status(f"{len(versions)} Fassung(en) von „{pattern}“ gefunden.")
+            if not versions:
+                self.info("Suche", f"Keine Datei mit „{pattern}“ in den Sicherungsständen gefunden.")
+                return
+            self.show_search_results(pattern, versions)
+
+        self.run_async(work, done)
+
+    def show_search_results(self, pattern: str, versions: list[restoremod.FileVersion]) -> None:
+        if self.search_dialog is not None:
+            try:
+                self.search_dialog.destroy()
+            except tk.TclError:
+                pass
+        window = tk.Toplevel(self)
+        window.title(f"Suchergebnis: {pattern}")
+        window.transient(self)
+        window.geometry("860x420")
+        window.configure(bg=self.style.lookup("TFrame", "background") or "#202124")
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+        ttk.Label(frame, text=f"{len(versions)} Fassung(en). Je Datei steht die neueste Fassung oben; „Weitere Stände“ nennt Stände mit derselben Fassung.", style="Sub.TLabel", wraplength=800).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        tree = ttk.Treeview(frame, columns=("stand", "size", "changed", "more"), show="tree headings", selectmode="browse")
+        for column, title, width in (("#0", "Datei", 330), ("stand", "Neuester Stand", 150), ("size", "Größe", 80), ("changed", "Geändert", 120), ("more", "Weitere Stände", 110)):
+            tree.heading(column, text=title)
+            tree.column(column, width=width, anchor="e" if column in ("size", "more") else "w", stretch=column == "#0")
+        tree.grid(row=1, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scroll.set)
+        self.search_results = {}
+        for index, version in enumerate(versions):
+            iid = str(index)
+            self.search_results[iid] = version
+            changed = time.strftime("%d.%m.%Y %H:%M", time.localtime(version.entry.mtime_ns / 1e9)) if version.entry.mtime_ns else "-"
+            tree.insert("", "end", iid=iid, text=version.path, values=(version.ref.spec, _human(version.entry.size), changed, len(version.also_in) or ""))
+        if versions:
+            tree.selection_set("0")
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(8, 0))
+
+        def chosen() -> restoremod.FileVersion | None:
+            selection = tree.selection()
+            return self.search_results.get(selection[0]) if selection else None
+
+        def preview() -> None:
+            version = chosen()
+            if version is not None:
+                self.preview_file(version.ref, version.entry)
+
+        def select() -> None:
+            version = chosen()
+            if version is not None and self.goto_version(version):
+                close()
+
+        def close() -> None:
+            self.search_dialog = None
+            window.destroy()
+
+        ttk.Button(buttons, text="Vorschau", command=preview).pack(side="left")
+        ttk.Button(buttons, text="Zum Wiederherstellen auswählen", style="Big.TButton", command=select).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Schließen", command=close).pack(side="left")
+        tree.bind("<Double-1>", lambda event: preview())
+        window.protocol("WM_DELETE_WINDOW", close)
+        self.search_dialog = window
+        self.search_tree = tree
+        self.search_dialog_actions = {"preview": preview, "select": select, "close": close}
+
+    def goto_version(self, version: restoremod.FileVersion) -> bool:
+        """Wählt im Reiter Wiederherstellung den Stand und die Datei dieser Fassung aus (Zielordner danach selbst wählen)."""
+        spec = version.ref.spec
+        if spec not in self.snapshot_refs:
+            return False
+        self.notebook.select(self.tab_restore)
+        self.snap_tree.selection_set(spec)
+        self.snap_tree.see(spec)
+        self.load_snapshot_files()
+        if not self.select_file_path(version.path):
+            return False
+        self.set_status(f"Ausgewählt: {version.path} aus {spec}. Zielordner wählen und „Wiederherstellen“.")
+        return True
+
+    def preview_selected(self) -> None:
+        ref = self.selected_snapshot()
+        paths = self.selected_paths()
+        if ref is None or ref.manifest is None or not paths:
+            self.info("Vorschau", "Bitte zuerst einen Stand und darin eine Datei auswählen.")
+            return
+        entry = ref.manifest.index().get(paths[0])
+        if entry is None:
+            self.info("Vorschau", "Für Ordner gibt es keine Vorschau – bitte eine Datei auswählen.")
+            return
+        self.preview_file(ref, entry)
+
+    def preview_file(self, ref: snapshots.SnapshotRef, entry: mf.FileEntry) -> None:
+        def work() -> restoremod.Preview:
+            return restoremod.preview(ref.path, entry)
+
+        def done(result: restoremod.Preview | None, error: BaseException | None) -> None:
+            if error or result is None:
+                self.error("Vorschau", str(error))
+                return
+            self.show_preview(f"{entry.path} – {ref.spec}", result)
+
+        self.run_async(work, done)
+
+    def _show_preview_window(self, title: str, preview: restoremod.Preview) -> None:
+        window = tk.Toplevel(self)
+        window.title(title)
+        window.transient(self)
+        window.geometry("760x520")
+        window.configure(bg=self.style.lookup("TFrame", "background") or "#202124")
+        frame = ttk.Frame(window, padding=10)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+        ttk.Label(frame, text=preview.info, style="Sub.TLabel", wraplength=720).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        if preview.kind == "image":
+            try:
+                import base64
+
+                image = tk.PhotoImage(data=base64.b64encode(preview.data))
+                factor = max(1, -(-image.width() // 720), -(-image.height() // 400))
+                if factor > 1:
+                    image = image.subsample(factor, factor)
+                label = ttk.Label(frame, image=image)
+                label.image = image  # type: ignore[attr-defined]
+                label.grid(row=1, column=0)
+            except tk.TclError:
+                ttk.Label(frame, text="Dieses Bild kann nicht angezeigt werden.").grid(row=1, column=0)
+        else:
+            box = self._text_area(frame, 20)
+            box.container.grid(row=1, column=0, sticky="nsew")  # type: ignore[attr-defined]
+            self._append(box, preview.text if preview.kind == "text" else "(keine Textvorschau)")
+            if preview.truncated:
+                self._append(box, "\n\n… (nur der Anfang der Datei wird angezeigt)")
+        ttk.Button(frame, text="Schließen", command=window.destroy).grid(row=2, column=0, sticky="e", pady=(8, 0))
 
     def selected_paths(self) -> list[str]:
         return [iid for iid in self.file_tree.selection() if not iid.endswith(DUMMY)]

@@ -33,6 +33,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("Stände ansehen und prüfen", [
         ("Stände auflisten", "Zeigt alle Stände (Daily, Monthly, Yearly) mit Datum, Größe und Status.", "list"),
         ("Als JSON auflisten", "Maschinenlesbare Ausgabe, z. B. für Skripte.", "list --json"),
+        ("Datei in allen Ständen suchen", "Sucht nach einem Teil des Pfades oder einem Muster (* und ?) und zeigt jede unterschiedliche Fassung der Datei mit dem neuesten Stand, der sie enthält. Die Oberfläche bietet dasselbe im Reiter Wiederherstellung mit Vorschau.", 'find "*.docx"'),
         ("Neuesten Stand prüfen", "Vergleicht alle gesicherten Dateien mit den SHA-256-Werten im Manifest.", "verify"),
         ("Bestimmten Stand prüfen", "Snapshot: latest, daily/JJJJ-MM-TT, monthly/JJJJ-MM, yearly/JJJJ oder ein Pfad.", "verify --snapshot daily/2026-11-18"),
     ]),

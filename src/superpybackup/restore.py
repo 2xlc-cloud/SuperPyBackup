@@ -199,3 +199,122 @@ def verify_snapshot(snapshot_dir: str, log: RunLog, sid: str | None = None) -> t
             log.error(f"Datei fehlt oder ist nicht lesbar: {entry.path}: {error}")
     log.info(f"Pruefung {snapshot_dir}: {len(manifest.files)} Dateien, {len(bad)} fehlerhaft")
     return len(manifest.files), bad
+
+
+# ---------------------------------------------------------------------------------------------------------------- Suche
+@dataclass
+class FileVersion:
+    """Eine Fassung einer Datei: der neueste Stand, der genau diese Fassung enthaelt, und alle Staende mit derselben Fassung."""
+
+    path: str
+    entry: mf.FileEntry
+    ref: snapshots.SnapshotRef
+    also_in: list[str]  # Namen weiterer Staende mit unveraendert derselben Fassung (neueste zuerst)
+
+
+def _matcher(pattern: str) -> Callable[[str], bool]:
+    text = pattern.strip().replace("\\", "/").lower()
+    if not text:
+        raise RestoreError("Bitte einen Suchbegriff angeben.")
+    if any(char in text for char in "*?["):
+        import fnmatch
+
+        return lambda path: fnmatch.fnmatchcase(path.lower(), text) or fnmatch.fnmatchcase(path.lower().rsplit("/", 1)[-1], text)
+    return lambda path: text in path.lower()
+
+
+def find_versions(refs: list[snapshots.SnapshotRef], pattern: str, *, limit: int = 1000) -> list[FileVersion]:
+    """Sucht Dateien (Teil des Pfades, oder Muster mit * ?) in allen Staenden und liefert je Datei jede unterschiedliche Fassung.
+
+    Sortiert nach Pfad, je Datei die neueste Fassung zuerst. Defekte Staende (ohne Manifest) werden uebergangen; hoechstens `limit` Fassungen.
+    """
+    matches = _matcher(pattern)
+    newest_first = sorted((ref for ref in refs if ref.manifest is not None), key=lambda ref: (ref.manifest.date, ref.name), reverse=True)
+    versions: dict[tuple[str, str], FileVersion] = {}
+    for ref in newest_first:
+        for entry in ref.manifest.files:
+            if not matches(entry.path):
+                continue
+            key = (entry.path, entry.sha256)
+            known = versions.get(key)
+            if known is None:
+                if len(versions) >= limit:
+                    continue
+                versions[key] = FileVersion(entry.path, entry, ref, [])
+            else:
+                known.also_in.append(ref.spec)
+    order = {}
+    for version in versions.values():
+        order.setdefault(version.path, []).append(version)
+    result: list[FileVersion] = []
+    for path in sorted(order, key=str.lower):
+        result.extend(order[path])  # Einfuegereihenfolge = neueste Fassung zuerst
+    return result
+
+
+# ------------------------------------------------------------------------------------------------------------- Vorschau
+PREVIEW_BYTES = 64 * 1024
+IMAGE_LIMIT = 8 * 1024 * 1024
+IMAGE_SUFFIXES = (".png", ".gif")
+
+
+@dataclass
+class Preview:
+    kind: str  # "text" | "image" | "binary"
+    info: str
+    text: str = ""
+    data: bytes = b""
+    truncated: bool = False
+
+
+def _decode_text(raw: bytes) -> str | None:
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            return None
+    if b"\x00" in raw:
+        return None
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        control = sum(1 for char in text if ord(char) < 32 and char not in "\r\n\t\f")
+        return text if control <= max(2, len(text) // 50) else None
+    return None
+
+
+def preview(snapshot_dir: str, entry: mf.FileEntry) -> Preview:
+    """Liest hoechstens PREVIEW_BYTES einer gesicherten Datei (nur lesend) fuer eine Vorschau: Text, PNG/GIF oder nur Angaben."""
+    from datetime import datetime
+
+    try:
+        path = fsutil.safe_join(snapshot_dir, entry.path)
+        fsutil.assert_plain_ancestors(path)
+    except (OSError, ValueError) as error:
+        raise RestoreError(f"Ungueltiger Pfad im Stand: {entry.path}: {error}") from error
+    stamp = datetime.fromtimestamp(entry.mtime_ns / 1e9).strftime("%d.%m.%Y %H:%M") if entry.mtime_ns else "?"
+    info = f"{entry.path}\nGroesse: {entry.size} Bytes | geaendert: {stamp} | SHA-256: {entry.sha256[:16]}..."
+    try:
+        if entry.path.lower().endswith(IMAGE_SUFFIXES) and entry.size <= IMAGE_LIMIT:
+            with open(fsutil.fs(path), "rb") as handle:
+                return Preview("image", info, data=handle.read(IMAGE_LIMIT + 1))
+        with open(fsutil.fs(path), "rb") as handle:
+            raw = handle.read(PREVIEW_BYTES + 1)
+    except OSError as error:
+        raise RestoreError(f"Datei nicht lesbar: {entry.path}: {error}") from error
+    truncated = len(raw) > PREVIEW_BYTES
+    chunk = raw[:PREVIEW_BYTES]
+    if truncated:  # nicht mitten in einem UTF-8-Zeichen abschneiden
+        for cut in range(4):
+            try:
+                chunk[: len(chunk) - cut].decode("utf-8")
+                chunk = chunk[: len(chunk) - cut]
+                break
+            except UnicodeDecodeError:
+                continue
+    text = _decode_text(chunk)
+    if text is None:
+        return Preview("binary", info + "\n\nKeine Textvorschau fuer diesen Dateityp.")
+    return Preview("text", info, text=text, truncated=truncated)

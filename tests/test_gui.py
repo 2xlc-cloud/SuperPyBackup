@@ -1101,3 +1101,47 @@ def test_gui_auto_update_check_reports_but_only_forces_beyond_the_limit(app, env
         app._closing = True  # den Wiederholungszeitgeber nicht weiterlaufen lassen
     finally:
         github.close()
+
+
+def test_search_all_snapshots_preview_and_select_for_restore(app, env, tmp_path):
+    write_tree(env.src, {"doc.txt": "erste Fassung", "ordner/tief/rechnung.txt": "rechnung 1"})
+    configure(app, env)
+    app.btn_backup.invoke()
+    app.wait_idle(60)
+    (env.src / "doc.txt").write_text("zweite Fassung, laenger", encoding="utf-8")
+    app.btn_backup_new.invoke()
+    app.wait_idle(60)
+    shown = []
+    app.show_preview = lambda title, preview: shown.append((title, preview))
+    app.var_search.set("   ")
+    app.search_files()
+    assert app.dialogs.kinds("info")[-1][1] == "Suche" and app.search_dialog is None  # leerer Suchbegriff: Hinweis statt Suche
+    app.var_search.set("gibt-es-nicht")
+    app.search_files()
+    app.wait_idle(30)
+    assert "Keine Datei" in app.dialogs.kinds("info")[-1][2] and app.search_dialog is None
+    app.var_search.set("doc")
+    app.search_files()
+    app.wait_idle(30)
+    assert app.search_dialog is not None and len(app.search_results) == 2  # zwei unterschiedliche Fassungen
+    first, second = app.search_results["0"], app.search_results["1"]
+    assert first.path == second.path == "Test/doc.txt" and first.entry.size > second.entry.size
+    app.search_tree.selection_set("1")
+    app.search_dialog_actions["preview"]()
+    app.wait_idle(30)
+    assert shown and shown[-1][1].kind == "text" and shown[-1][1].text == "erste Fassung" and "Test/doc.txt" in shown[-1][0]
+    app.search_dialog_actions["select"]()  # waehlt Stand und Datei im Reiter Wiederherstellung aus und schliesst den Dialog
+    app.update()
+    assert app.search_dialog is None and app.selected_snapshot().spec == second.ref.spec and app.selected_paths() == ["Test/doc.txt"]
+    out = tmp_path / "wieder"
+    app.var_restore_dest.set(str(out))
+    app.btn_restore.invoke()
+    app.wait_idle(60)
+    assert read_tree(out) == {"Test/doc.txt": b"erste Fassung"}  # genau die gewaehlte aeltere Fassung
+    app.file_tree.selection_set(["Test"])
+    app.preview_selected()
+    assert app.dialogs.kinds("info")[-1][1] == "Vorschau"  # Ordner: keine Vorschau
+    app.file_tree.selection_set(["Test/doc.txt"])
+    app.preview_selected()
+    app.wait_idle(30)
+    assert len(shown) == 2
