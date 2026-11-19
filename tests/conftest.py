@@ -124,3 +124,13 @@ def _never_touch_the_real_desktop(tmp_path, monkeypatch):
     desktop = tmp_path / "Desktop"
     desktop.mkdir()
     monkeypatch.setenv("SUPERPYBACKUP_DESKTOP", str(desktop))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_network_shares(tmp_path, monkeypatch):
+    """Tests nutzen nie die echten Anmeldedaten und merken sich keine Verbindungen aus anderen Tests."""
+    from superpybackup import netshare
+
+    if not os.environ.get("SUPERPYBACKUP_HOME"):
+        monkeypatch.setenv("SUPERPYBACKUP_HOME", str(tmp_path / "home-isolated"))
+    monkeypatch.setattr(netshare, "_connected", {})

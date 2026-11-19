@@ -114,6 +114,9 @@ class Config:
     def target_dir(self, identity: Any) -> str:
         """Sicherungsordner dieses Benutzers im Ziel; weitere Sicherungen haben einen eigenen Ordner (<Benutzerordner>__<Name>)."""
         suffix = f"__{self.job}" if self.job else ""
+        from . import netshare  # erst hier: netshare nutzt selbst die Konfiguration
+
+        netshare.ensure_connected(self.backup_root)  # bei einer Netzwerkfreigabe mit hinterlegten Anmeldedaten zuerst anmelden
         return os.path.join(self.backup_root, identity.folder + suffix)
 
     @property

@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, jobs as jobsmod, manifest as mf, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, tray as trayicon, updater, winapi
+from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, credstore, engine, faq, fsutil, jobs as jobsmod, manifest as mf, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, tray as trayicon, updater, winapi
 from . import icon as appicon
 from .identity import get_identity
 from . import runlog
@@ -136,6 +136,8 @@ class App(tk.Tk):
         self._set_window_icon()
         if tray:
             self._start_tray(start_in_tray)
+        self.cred_dialog = None
+        self.last_connection_test = None
         self._external = False  # laeuft gerade eine Sicherung eines anderen Prozesses (z. B. per Aufgabe)?
         self._external_offset = 0
         self._external_log = ""
@@ -349,6 +351,15 @@ class App(tk.Tk):
         self.var_target = tk.StringVar()
         ttk.Entry(box, textvariable=self.var_target).grid(row=0, column=0, sticky="ew")
         ttk.Button(box, text="Auswählen ...", command=lambda: self._browse_into(self.var_target, "Sicherungsziel wählen")).grid(row=0, column=1, padx=(8, 0))
+        self.cred_label = ttk.Label(box, text="", style="Sub.TLabel", wraplength=560)
+        self.cred_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        cred_buttons = ttk.Frame(box)
+        cred_buttons.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(6, 0))
+        self.btn_cred = ttk.Button(cred_buttons, text="Anmeldedaten …", command=self.open_credentials_dialog)
+        self.btn_cred.pack(side="left")
+        self.btn_conn_test = ttk.Button(cred_buttons, text="Verbindung testen", command=self.test_connection)
+        self.btn_conn_test.pack(side="left", padx=(6, 0))
+        self.var_target.trace_add("write", lambda *args: self.refresh_credentials_label())
         # Quellen
         box = ttk.LabelFrame(body, text="Quellen", padding=10)
         box.grid(row=1, column=0, sticky="ew", **pad)
@@ -811,6 +822,132 @@ class App(tk.Tk):
         self.btn_cancel.configure(state="normal" if running and self._backup_running else "disabled")
         self._refresh_tray_menu(running)
         self._update_icon_state(running)
+
+    # ------------------------------------------------------------------ Netzwerkziel (UNC) und Anmeldedaten
+    def refresh_credentials_label(self) -> None:
+        target = self.var_target.get().strip()
+        key = credstore.share_key(target)
+        if key is None:
+            text = "Lokales Ziel: keine Anmeldung nötig." if target else ""
+        else:
+            try:
+                user = credstore.user_of(target)
+            except credstore.CredentialError as error:
+                text = f"Netzwerkziel {netshare.share_name(target)}: Anmeldedaten nicht lesbar ({error})"
+            else:
+                text = f"Netzwerkziel {netshare.share_name(target)}: " + (f"Anmeldung als {user} (Kennwort verschlüsselt gespeichert)." if user else "keine Anmeldedaten hinterlegt, es wird mit dem Windows-Konto zugegriffen.")
+        self.cred_label.configure(text=text)
+
+    def _target_for_credentials(self) -> str | None:
+        target = self.var_target.get().strip()
+        if credstore.share_key(target) is None:
+            self.error("Anmeldedaten", "Das Sicherungsziel ist keine Netzwerkfreigabe. Anmeldedaten gibt es nur für Ziele wie \\\\Server\\Freigabe\\Ordner.")
+            return None
+        return target
+
+    def test_connection(self, user: str | None = None, password: str | None = None, *, show: bool = True) -> None:
+        """Testet das Sicherungsziel (Anmeldung, Ordner, Schreiben, Hardlinks, Speicher), mit hinterlegten oder eingegebenen Anmeldedaten."""
+        target = self.var_target.get().strip()
+        if not target:
+            self.error("Verbindungstest", "Bitte zuerst ein Sicherungsziel eintragen.")
+            return
+        self.set_status("Verbindung wird getestet ...")
+        self.btn_conn_test.configure(state="disabled")
+
+        def done(result: netshare.TestResult | None, error: BaseException | None) -> None:
+            self.btn_conn_test.configure(state="normal")
+            self.last_connection_test = result
+            if error or result is None:
+                self.set_status("Verbindungstest nicht möglich.")
+                self.error("Verbindungstest", f"Der Test konnte nicht ausgeführt werden: {error}")
+                return
+            self.set_status("Verbindungstest erfolgreich." if result.ok else "Verbindungstest fehlgeschlagen.")
+            self.settings_message.configure(text=("Verbindungstest erfolgreich." if result.ok else "Verbindungstest fehlgeschlagen: " + next((line for line in result.lines if line.startswith("FEHLER")), "").replace("FEHLER  ", "")), style="Ok.TLabel" if result.ok else "Bad.TLabel")
+            if show:
+                (self.info if result.ok else self.error)("Verbindungstest", result.text + ("\n\nTest erfolgreich." if result.ok else "\n\nTest fehlgeschlagen."))
+
+        self.run_async(lambda: netshare.test_target(target, user, password), done)
+
+    def save_credentials(self, user: str, password: str) -> bool:
+        target = self._target_for_credentials()
+        if target is None:
+            return False
+        try:
+            key = credstore.save(target, user, password)
+            netshare.reset(target)  # eine bestehende Verbindung mit alten Anmeldedaten trennen
+        except credstore.CredentialError as error:
+            self.error("Anmeldedaten", str(error))
+            return False
+        self.refresh_credentials_label()
+        self.set_status(f"Anmeldedaten für {key} gespeichert (Kennwort verschlüsselt).")
+        return True
+
+    def remove_credentials(self) -> bool:
+        target = self._target_for_credentials()
+        if target is None:
+            return False
+        try:
+            removed = credstore.remove(target)
+            netshare.reset(target)
+        except credstore.CredentialError as error:
+            self.error("Anmeldedaten", str(error))
+            return False
+        self.refresh_credentials_label()
+        self.set_status("Anmeldedaten entfernt." if removed else "Es waren keine Anmeldedaten hinterlegt.")
+        return removed
+
+    def open_credentials_dialog(self) -> None:
+        target = self._target_for_credentials()
+        if target is None:
+            return
+        if getattr(self, "cred_dialog", None) is not None:
+            try:
+                self.cred_dialog.lift()
+                return
+            except tk.TclError:
+                self.cred_dialog = None
+        window = tk.Toplevel(self)
+        window.title("Anmeldedaten für das Netzwerkziel")
+        window.transient(self)
+        window.resizable(False, False)
+        window.configure(bg=self.style.lookup("TFrame", "background") or "#202124")
+        frame = ttk.Frame(window, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"Freigabe: {netshare.share_name(target)}", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(frame, text="Das Kennwort wird mit Windows (DPAPI) nur für Ihr Benutzerkonto verschlüsselt im Programmordner gespeichert.", style="Sub.TLabel", wraplength=420).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 10))
+        self.var_cred_user = tk.StringVar(value=credstore.user_of(target) or "")
+        self.var_cred_password = tk.StringVar()
+        ttk.Label(frame, text="Benutzername:").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(frame, textvariable=self.var_cred_user, width=34).grid(row=2, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frame, text="Kennwort:").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Entry(frame, textvariable=self.var_cred_password, width=34, show="●").grid(row=3, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frame, text="Beispiele: benutzer, NAS\\benutzer oder benutzer@domain. Bei einem bereits gespeicherten Eintrag das Kennwort neu eingeben.", style="Sub.TLabel", wraplength=420).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e")
+
+        def close() -> None:
+            self.var_cred_password.set("")
+            self.cred_dialog = None
+            window.destroy()
+
+        def test() -> None:
+            self.test_connection(self.var_cred_user.get().strip(), self.var_cred_password.get())
+
+        def save() -> None:
+            if self.save_credentials(self.var_cred_user.get(), self.var_cred_password.get()):
+                close()
+
+        def delete() -> None:
+            self.remove_credentials()
+            close()
+
+        ttk.Button(buttons, text="Testen", command=test).pack(side="left")
+        ttk.Button(buttons, text="Speichern", style="Big.TButton", command=save).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Gespeicherte löschen", command=delete).pack(side="left")
+        ttk.Button(buttons, text="Schließen", command=close).pack(side="left", padx=(6, 0))
+        window.protocol("WM_DELETE_WINDOW", close)
+        self.cred_dialog = window
+        self.cred_dialog_actions = {"test": test, "save": save, "delete": delete, "close": close}
 
     # ------------------------------------------------------------------ Mehrere Sicherungen
     def _apply_job(self, name: str | None) -> None:

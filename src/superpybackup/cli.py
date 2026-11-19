@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, jobs as jobsmod, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, updater
+from . import __version__, cleanup as cleanupmod, config as cfgmod, credstore, engine, fsutil, jobs as jobsmod, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, updater
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -290,6 +290,68 @@ def cmd_job(args: argparse.Namespace) -> int:
         return 1
 
 
+def _read_password(args: argparse.Namespace) -> str:
+    """Kennwort nie als Argument (waere in Prozessliste und Verlauf sichtbar): aus stdin oder per Eingabeaufforderung."""
+    if args.password_stdin:
+        return (sys.stdin.readline() if sys.stdin else "").rstrip("\r\n")
+    if sys.stdin is not None and sys.stdin.isatty():
+        import getpass
+
+        return getpass.getpass(f"Kennwort fuer {args.user}: ")
+    raise credstore.CredentialError("Ohne Terminal bitte --password-stdin verwenden und das Kennwort ueber die Standardeingabe uebergeben.")
+
+
+def _print_test(result: netshare.TestResult) -> None:
+    print(result.text)
+    print("Test erfolgreich." if result.ok else "Test fehlgeschlagen.")
+
+
+def cmd_credentials(args: argparse.Namespace) -> int:
+    try:
+        if args.action == "list":
+            entries = credstore.list_entries()
+            if not entries:
+                print("Keine Anmeldedaten hinterlegt.")
+            for share, user in entries:
+                print(f"{share:<40}{user}   (Kennwort verschluesselt, nur fuer diesen Windows-Benutzer lesbar)")
+            return 0
+        config = None
+        if not args.share and (args.config or cfgmod.default_config_path().is_file()):
+            config = cfgmod.load(args.config, require_target=False)
+        target = args.share or (config.backup_root if config else "")
+        if not target:
+            print("Bitte --share mit Server und Freigabe angeben (oder in der Konfiguration ein Sicherungsziel eintragen).", file=sys.stderr)
+            return EXIT_USAGE
+        if args.action == "remove":
+            removed = credstore.remove(target)
+            netshare.reset(target)
+            print("Anmeldedaten entfernt." if removed else "Es waren keine Anmeldedaten hinterlegt.")
+            return 0
+        if args.action == "set":
+            if not args.user:
+                print("Bitte --user angeben.", file=sys.stderr)
+                return EXIT_USAGE
+            password = _read_password(args)
+            key = credstore.save(target, args.user, password)
+            netshare.reset(target)
+            print(f"Anmeldedaten gespeichert fuer {key} (Benutzer {args.user}, Kennwort verschluesselt).")
+            if args.no_test:
+                return 0
+            result = netshare.test_target(target)
+            _print_test(result)
+            return 0 if result.ok else 1
+        # test
+        if args.user:
+            result = netshare.test_target(target, args.user, _read_password(args))
+        else:
+            result = netshare.test_target(target)
+        _print_test(result)
+        return 0 if result.ok else 1
+    except credstore.CredentialError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
 def _install_dir() -> str:
     if not getattr(sys, "frozen", False):
         raise updater.UpdateError("Die Programmaktualisierung ist nur in der installierten EXE-Version verfuegbar (nicht beim Start aus dem Quellcode).")
@@ -461,6 +523,14 @@ def build_parser() -> argparse.ArgumentParser:
     job.add_argument("name", nargs="?", help="Name der Sicherung (Buchstaben, Ziffern, . _ -)")
     job.add_argument("--copy-from", help="bei add: Einstellungen einer vorhandenen Sicherung uebernehmen (z. B. Standard)")
     job.set_defaults(func=cmd_job)
+
+    credentials = sub.add_parser("credentials", help="Anmeldedaten fuer ein Netzwerkziel (UNC-Freigabe) speichern, anzeigen, entfernen, testen")
+    credentials.add_argument("action", choices=["set", "list", "remove", "test"])
+    credentials.add_argument("--share", help="Freigabe oder Zielpfad (Standard: das Sicherungsziel der Konfiguration)")
+    credentials.add_argument("--user", help="Benutzername (z. B. benutzer, NAS-name\\benutzer oder benutzer@domain)")
+    credentials.add_argument("--password-stdin", action="store_true", help="Kennwort aus der Standardeingabe lesen (nie als Argument uebergeben)")
+    credentials.add_argument("--no-test", action="store_true", help="bei set: nach dem Speichern nicht testen")
+    credentials.set_defaults(func=cmd_credentials)
 
     update = sub.add_parser("update", help="Updates pruefen/installieren")
     update.add_argument("action", choices=["check", "install", "rollback"])

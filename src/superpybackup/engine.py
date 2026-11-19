@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
-from . import __version__, config as cfgmod, fsutil, manifest as mf, retention, snapshots, winapi
+from . import netshare, __version__, config as cfgmod, fsutil, manifest as mf, retention, snapshots, winapi
 from .identity import Identity, get_identity
 from .runlog import RunLog
 
@@ -337,6 +337,9 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
         root = config.backup_root
         if not root or not os.path.isabs(root):
             raise BackupError("Sicherungsziel ist nicht als absoluter Pfad konfiguriert.")
+        connection_error = netshare.ensure_connected(root, log)
+        if connection_error:
+            raise BackupError(connection_error)
         if not os.path.isdir(fsutil.fs(root)):
             raise BackupError(f"Sicherungsziel nicht vorhanden oder nicht erreichbar: {root}")
         fsutil.assert_plain_directory(root)

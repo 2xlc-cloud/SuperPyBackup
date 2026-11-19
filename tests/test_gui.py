@@ -996,3 +996,52 @@ def test_live_log_is_taken_from_the_log_folder_of_the_running_job(app, env, tmp_
     (old / "aktuell.log").write_text("alt\n", encoding="utf-8")
     _os.utime(old / "aktuell.log", (1, 1))
     assert app._live_log_path() == str(other / "aktuell.log")
+
+
+def test_network_target_credentials_dialog_save_and_remove(app, env, monkeypatch):
+    from superpybackup import credstore, netshare
+
+    secret = "Geheim-123-äöü"
+    disconnected = []
+    monkeypatch.setattr(netshare, "disconnect", lambda share: disconnected.append(share) or 0)
+    configure(app, env)
+    assert "Lokales Ziel" in app.cred_label.cget("text")
+    app.open_credentials_dialog()  # lokales Ziel: kein Dialog, sondern Hinweis
+    assert app.cred_dialog is None and app.dialogs.kinds("fehler")
+    app.var_target.set("\\\\nas.example\\backup\\ordner")
+    assert "keine Anmeldedaten" in app.cred_label.cget("text") and "\\\\nas.example\\backup" in app.cred_label.cget("text")
+    app.open_credentials_dialog()
+    assert app.cred_dialog is not None
+    app.var_cred_user.set("nas\\benutzer")
+    app.var_cred_password.set(secret)
+    app.cred_dialog_actions["save"]()
+    assert app.cred_dialog is None and app.var_cred_password.get() == ""  # Dialog zu, Kennwort aus dem Speicher der Maske entfernt
+    assert credstore.load("\\\\nas.example\\backup") == ("nas\\benutzer", secret)
+    assert secret.encode("utf-8") not in credstore.store_path().read_bytes()
+    label = app.cred_label.cget("text")
+    assert "nas\\benutzer" in label and "verschlüsselt" in label and secret not in label
+    assert secret not in "".join(str(call) for call in app.dialogs.calls)
+    app.open_credentials_dialog()  # zweiter Aufruf: Benutzername ist vorbelegt, Kennwort nie
+    assert app.var_cred_user.get() == "nas\\benutzer" and app.var_cred_password.get() == ""
+    app.cred_dialog_actions["delete"]()
+    assert credstore.load("\\\\nas.example\\backup") is None and "keine Anmeldedaten" in app.cred_label.cget("text")
+    app.dialogs.calls.clear()
+    assert app.save_credentials("", "x") is False and app.dialogs.kinds("fehler")  # leerer Benutzername wird abgewiesen
+
+
+def test_connection_test_button_reports_the_result(app, env):
+    configure(app, env)
+    app.test_connection(show=False)
+    app.wait_idle(30)
+    assert app.last_connection_test.ok and "Testdatei" in app.last_connection_test.text
+    assert "erfolgreich" in app.settings_message.cget("text") and str(app.btn_conn_test.cget("state")) == "normal"
+    app.var_target.set(str(env.root / "gibt-es-nicht"))
+    app.dialogs.calls.clear()
+    app.test_connection()
+    app.wait_idle(30)
+    assert app.last_connection_test.ok is False and "fehlgeschlagen" in app.settings_message.cget("text")
+    assert app.dialogs.kinds("fehler") and "nicht erreichbar" in app.dialogs.kinds("fehler")[-1][2]
+    app.var_target.set("")
+    app.dialogs.calls.clear()
+    app.test_connection()
+    assert app.dialogs.kinds("fehler")  # ohne Ziel kein Test

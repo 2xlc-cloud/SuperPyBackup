@@ -9,6 +9,7 @@ __pycache__/
 
 # Lokale Konfiguration, Protokolle und Testdaten gehoeren nie ins Repository
 config.json
+credentials.json
 *.log
 bench/work/
 .venv/

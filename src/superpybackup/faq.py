@@ -68,6 +68,12 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("Einstellungen übernehmen", "Legt die neue Sicherung als Kopie einer vorhandenen an; danach Quellen und Ziel anpassen.", "job add Fotos --copy-from Standard"),
         ("Sicherung entfernen", "Entfernt nur die Einstellungen und die Aufgabe dieser Sicherung. Bereits gesicherte Stände im Ziel bleiben erhalten. Standard lässt sich nicht entfernen.", "job remove Fotos"),
     ]),
+    ("Netzwerkziel (UNC)", [
+        ("Anmeldedaten speichern", "Für ein Sicherungsziel wie \\\\NAS\\Backup: speichert Benutzer und Kennwort (das Kennwort kommt über die Standardeingabe, nie als Argument) und testet danach die Verbindung. Das Kennwort wird mit Windows (DPAPI) nur für Ihr Benutzerkonto verschlüsselt im Programmordner abgelegt.", 'credentials set --share "\\\\NAS\\Backup" --user benutzer --password-stdin'),
+        ("Verbindung testen", "Prüft das Sicherungsziel der Konfiguration: Anmeldung, Ordner, Schreiben/Lesen/Löschen einer Testdatei, Hardlinks, freier Speicher. Mit --share ein anderes Ziel.", "credentials test"),
+        ("Gespeicherte Anmeldedaten anzeigen", "Zeigt Freigaben und Benutzernamen (nie Kennwörter).", "credentials list"),
+        ("Anmeldedaten entfernen", "Löscht die gespeicherten Anmeldedaten einer Freigabe; gesicherte Daten bleiben unberührt.", 'credentials remove --share "\\\\NAS\\Backup"'),
+    ]),
     ("Windows-Aufgabe", [
         ("Aufgabe einrichten", "Legt die versteckte Aufgabe an: Start 2 Minuten nach der Anmeldung, ohne Administratorrechte.", "task install"),
         ("Andere Wartezeit", "Wartezeit in Minuten nach der Anmeldung.", "task install --delay 5"),
