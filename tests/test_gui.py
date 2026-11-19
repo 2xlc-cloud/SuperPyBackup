@@ -74,6 +74,8 @@ def app(env):
         pass
     try:
         scheduler.uninstall(application.task_name)
+        scheduler.uninstall(application.base_task_name)
+        scheduler.uninstall(application.all_task_name)
         scheduler.uninstall(application.update_task_name)
     except scheduler.SchedulerError:
         pass
@@ -699,7 +701,7 @@ def test_tray_menu_quit_stops_icon_and_closes(app, monkeypatch):
 
 def test_tray_menu_reflects_busy_state_and_autostart(app, monkeypatch, env):
     with_tray(app, monkeypatch)
-    assert app.tray.enabled() == {"open": True, "backup": True, "backup_new": True, "backup_full": True, "cancel": False, "autostart": True, "quit": True}
+    assert app.tray.enabled() == {"open": True, "backup": True, "backup_new": True, "backup_full": True, "backup_all": True, "cancel": False, "autostart": True, "quit": True}
     app._set_busy_state(True)
     assert app.tray.enabled()["backup"] is False and app.tray.enabled()["backup_full"] is False
     app._backup_running = True
@@ -866,3 +868,131 @@ def test_no_external_detection_while_the_gui_runs_its_own_backup(app, env):
     finally:
         app._backup_running = False
         mutex.close()
+
+
+def _make_job_via_gui(app, env, name, files):
+    import json
+
+    app.dialogs.text = name
+    app.new_job()
+    source = env.root / f"src-{name}"
+    write_tree(source, files)
+    data = json.loads(app.config_path.read_text(encoding="utf-8"))
+    data["extra_sources"] = [{"name": "Arbeit", "path": str(source)}]
+    app.config_path.write_text(json.dumps(data), encoding="utf-8")
+    app.load_config()
+    return source
+
+
+def test_job_bar_new_switch_and_remove(app, env):
+    configure(app, env)
+    assert app.job == "Standard" and str(app.btn_job_remove.cget("state")) == "disabled" and list(app.job_combo.cget("values")) == ["Standard"]
+    standard_target = app.var_target.get()
+    app.dialogs.text = "arbeit"
+    app.new_job()
+    assert app.job == "arbeit" and app.config_path == env.root / "jobs" / "arbeit.json" and app.config_path.is_file()
+    assert app.task_name == app.base_task_name + "-Job-arbeit" and "arbeit" in app.title()
+    assert app.var_target.get() == standard_target  # Einstellungen der bisherigen Sicherung uebernommen
+    assert str(app.btn_job_remove.cget("state")) == "normal" and list(app.job_combo.cget("values")) == ["Standard", "arbeit"]
+    assert app.select_job("Standard") and app.config_path == env.root / "config.json" and app.task_name == app.base_task_name
+    app.dialogs.text = "arbeit"
+    app.new_job()  # Name schon vergeben: Fehlermeldung, nichts geaendert
+    assert app.dialogs.kinds("fehler") and app.job == "Standard"
+    assert app.select_job("arbeit")
+    app.remove_job()
+    assert app.job == "Standard" and not (env.root / "jobs" / "arbeit.json").exists() and list(app.job_combo.cget("values")) == ["Standard"]
+    assert app.dialogs.kinds("ja/nein")[-1][2].count("bleiben erhalten") == 1
+    app.remove_job()  # Standard ist nicht entfernbar
+    assert env.root.joinpath("config.json").is_file()
+
+
+def test_switching_the_job_is_blocked_while_something_runs(app, env):
+    configure(app, env)
+    app.dialogs.text = "arbeit"
+    app.new_job()
+    app.select_job("Standard")
+    app._ops = 1
+    try:
+        assert app.select_job("arbeit") is False and app.job == "Standard" and app.var_job.get() == "Standard"
+    finally:
+        app._ops = 0
+    assert app.select_job("arbeit") and app.job == "arbeit"
+
+
+def test_back_up_one_job_and_all_jobs(app, env):
+    from superpybackup.identity import get_identity
+
+    write_tree(env.src, {"a.txt": "standard"})
+    configure(app, env)
+    _make_job_via_gui(app, env, "arbeit", {"b.txt": "arbeit"})
+    identity = get_identity()
+    app.start_backup(False)
+    app.wait_idle(60)
+    names = sorted(p.name for p in env.dst.iterdir())
+    assert names == [identity.folder + "__arbeit"]  # nur die gewaehlte Sicherung
+    app.select_job("Standard")
+    app.start_backup_all()
+    assert app._backup_running and "btn_backup_all" in app.__dict__ and str(app.btn_backup_all.cget("state")) == "disabled"
+    app.wait_idle(120)
+    assert sorted(p.name for p in env.dst.iterdir()) == sorted([identity.folder, identity.folder + "__arbeit"])
+    text = app.result_label.cget("text")
+    assert "Standard" in text and "arbeit" in text and app._last_run_failed is False and app._icon_state == "idle"
+    assert "=== Sicherung arbeit ===" in app.backup_log.get("1.0", "end")
+
+
+def test_all_jobs_run_on_even_if_one_is_broken(app, env):
+    write_tree(env.src, {"a.txt": "standard"})
+    configure(app, env)
+    (env.root / "jobs").mkdir()
+    (env.root / "jobs" / "kaputt.json").write_text("{ kein json", encoding="utf-8")
+    app.start_backup_all()
+    app.wait_idle(120)
+    text = app.result_label.cget("text")
+    assert "Standard: erfolgreich" in text and "Übersprungen" in text and "kaputt" in text and app._last_run_failed
+
+
+def test_task_for_all_jobs_install_status_remove(app, env):
+    configure(app, env)
+    app.var_all_delay.set("4")
+    app.var_all_daily_on.set(True)
+    app.var_all_daily_at.set("21:30")
+    app.install_all_task()
+    info = scheduler.status(app.all_task_name)
+    assert info["exists"] and info["delay_minutes"] == 4 and info["daily_at"] == "21:30" and info["arguments"].endswith("backup --all --quiet")
+    assert app.all_task_name == app.base_task_name + "-Alle"
+    app.refresh_all_task()
+    app.wait_idle(30)
+    assert app.all_task_name in app.task_text.get("1.0", "end")
+    app.remove_all_task()
+    assert scheduler.status(app.all_task_name)["exists"] is False
+
+
+def test_task_tab_shows_job_and_task_of_the_chosen_backup(app, env):
+    configure(app, env)
+    app.dialogs.text = "arbeit"
+    app.new_job()
+    app.notebook.select(app.tab_task)
+    app.update()
+    app.refresh_task()
+    app.wait_idle(30)
+    assert "arbeit" in app.task_title.cget("text") and app.task_name in app.task_title.cget("text")
+
+
+def test_live_log_is_taken_from_the_log_folder_of_the_running_job(app, env, tmp_path):
+    import json
+    import os as _os
+
+    configure(app, env)
+    _make_job_via_gui(app, env, "arbeit", {"b.txt": "x"})
+    other = tmp_path / "andere-logs"
+    other.mkdir()
+    data = json.loads(app.config_path.read_text(encoding="utf-8"))
+    data["logging"]["directory"] = str(other)
+    app.config_path.write_text(json.dumps(data), encoding="utf-8")
+    app.select_job("Standard")  # gewaehlt ist Standard, es laeuft aber "arbeit" mit anderem Protokollordner
+    (other / "aktuell.log").write_text("2026-11-19 10:00:00.000 [INFO] Sicherungslauf beginnt\n", encoding="utf-8")
+    old = env.home / "Logs"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "aktuell.log").write_text("alt\n", encoding="utf-8")
+    _os.utime(old / "aktuell.log", (1, 1))
+    assert app._live_log_path() == str(other / "aktuell.log")

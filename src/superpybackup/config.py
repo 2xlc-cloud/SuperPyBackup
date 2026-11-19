@@ -41,6 +41,19 @@ def app_home() -> Path:
     return Path(base) / "SuperPyBackup"
 
 
+JOBS_FOLDER = "jobs"  # weitere Sicherungen: <Ordner der Hauptkonfiguration>/jobs/<Name>.json
+STANDARD_JOB = "Standard"  # Anzeigename der Hauptkonfiguration (config.json)
+JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+
+
+def job_of(path: str | os.PathLike[str] | None) -> str:
+    """Name der weiteren Sicherung zu einem Konfigurationspfad; leer fuer die Hauptkonfiguration (Standard)."""
+    if not path:
+        return ""
+    p = Path(path)
+    return p.stem if p.parent.name.lower() == JOBS_FOLDER and p.suffix.lower() == ".json" else ""
+
+
 def default_config_path() -> Path:
     override = os.environ.get(ENV_CONFIG)
     return Path(override) if override else app_home() / "config.json"
@@ -92,6 +105,16 @@ class Config:
     @property
     def backup_root(self) -> str:
         return self.data["backup_root"]
+
+    @property
+    def job(self) -> str:
+        """Name der weiteren Sicherung (aus dem Dateipfad), leer bei der Hauptkonfiguration."""
+        return job_of(self.path)
+
+    def target_dir(self, identity: Any) -> str:
+        """Sicherungsordner dieses Benutzers im Ziel; weitere Sicherungen haben einen eigenen Ordner (<Benutzerordner>__<Name>)."""
+        suffix = f"__{self.job}" if self.job else ""
+        return os.path.join(self.backup_root, identity.folder + suffix)
 
     @property
     def retention(self) -> dict[str, int]:
@@ -272,6 +295,9 @@ def load(path: str | os.PathLike[str] | None = None, *, require_target: bool = T
         raise ConfigError(f"Konfigurationsdatei ist kein gueltiges JSON ({config_path}, Zeile {error.lineno}, Spalte {error.colno}): {error.msg}") from error
     except OSError as error:
         raise ConfigError(f"Konfigurationsdatei nicht lesbar ({config_path}): {error}") from error
+    job = job_of(config_path)
+    if job and (not JOB_NAME.match(job) or job.lower() == STANDARD_JOB.lower()):
+        raise ConfigError(f"Ungueltiger Name der Sicherung {job!r}: erlaubt sind Buchstaben, Ziffern, '.', '_' und '-' (hoechstens 40 Zeichen), und nicht {STANDARD_JOB!r}.")
     return from_dict(given, path=config_path, require_target=require_target)
 
 

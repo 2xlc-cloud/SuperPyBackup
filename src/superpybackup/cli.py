@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, updater
+from . import __version__, cleanup as cleanupmod, config as cfgmod, engine, fsutil, jobs as jobsmod, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, updater
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -33,7 +33,7 @@ def _load_config(args: argparse.Namespace, *, require_target: bool = True) -> cf
 
 def _target_dir(config: cfgmod.Config) -> tuple[str, str]:
     identity = get_identity()
-    return os.path.join(config.backup_root, identity.folder), identity.sid
+    return config.target_dir(identity), identity.sid
 
 
 def _log(config: cfgmod.Config, *, quiet: bool = False) -> RunLog:
@@ -43,7 +43,35 @@ def _log(config: cfgmod.Config, *, quiet: bool = False) -> RunLog:
 
 # --- Befehle -----------------------------------------------------------------------------------
 
+def _base_config(args: argparse.Namespace) -> str:
+    """Pfad der Hauptkonfiguration (auch wenn --job eine weitere Sicherung gewaehlt hat)."""
+    return getattr(args, "base_config", None) or args.config or str(cfgmod.default_config_path())
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
+    if not getattr(args, "all", False):
+        return _backup_one(args)
+    if getattr(args, "job", None):
+        print("--all und --job schliessen sich aus.", file=sys.stderr)
+        return EXIT_USAGE
+    worst = 0
+    base = _base_config(args)
+    for job in jobsmod.list_jobs(base):
+        if job.standard and not job.path.is_file():
+            continue  # keine Hauptkonfiguration: nur die weiteren Sicherungen
+        if not args.quiet:
+            print(f"\n=== Sicherung {job.name} ===")
+        args.config = str(job.path)
+        try:
+            worst = max(worst, _backup_one(args))
+        except cfgmod.ConfigError as error:  # eine fehlerhafte Konfiguration haelt die uebrigen Sicherungen nicht auf
+            print(f"Sicherung {job.name}: {str(error).splitlines()[0]}", file=sys.stderr)
+            notifymod.notify_from_file(str(job.path), notifymod.ERROR, f"Sicherung nicht gestartet ({job.name})", str(error).splitlines()[0][:300])
+            worst = max(worst, 1)
+    return worst
+
+
+def _backup_one(args: argparse.Namespace) -> int:
     config = _load_config(args)
     mode = engine.FULL if args.full else engine.INCREMENTAL if args.incremental else None
     result = engine.run_backup(config, new_snapshot=True if args.new_snapshot else None, mode=mode, echo=None if args.quiet else sys.stdout)
@@ -56,10 +84,10 @@ def cmd_backup(args: argparse.Namespace) -> int:
             print("Art: " + ("Vollsicherung" if result.kind == engine.FULL else "Inkrement"))
         print(f"Gescannt {stats.scanned} | neu {stats.new} | geaendert {stats.modified} | unveraendert {stats.unchanged} | ausgelassen {stats.skipped} | Fehler {stats.errors}")
         print(f"Uebertragen {_human(stats.bytes_transferred)} | Gesamt {_human(stats.total_bytes)} | zusaetzlicher Speicher {_human(stats.extra_storage_bytes)} | {result.seconds:.1f} s")
-    message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""))
+    message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""), config.job)
     if message:
         notifymod.notify(config.notifications, *message, log=_safe_log(config))
-    if result.status != engine.BUSY:
+    if result.status != engine.BUSY and not getattr(args, "all", False):
         try:
             log = _log(config, quiet=True)
             info = updater.periodic_check(config, log)
@@ -194,12 +222,29 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_task(args: argparse.Namespace) -> int:
-    name = scheduler.validate_name(args.name or scheduler.default_task_name())
+    run_all = getattr(args, "all", False)
+    if run_all and getattr(args, "job", None):
+        print("--all und --job schliessen sich aus.", file=sys.stderr)
+        return EXIT_USAGE
+    if run_all:
+        name = scheduler.validate_name(args.name or jobsmod.all_task_name(scheduler.default_task_name()))
+    else:
+        job = cfgmod.job_of(args.config)
+        name = scheduler.validate_name(args.name or jobsmod.task_name(scheduler.default_task_name(), job))
     if args.action in ("install", "set"):
-        config = _load_config(args)  # nur installieren, wenn die Konfiguration gueltig ist
-        program, arguments = scheduler.program_command(str(config.path) if config.path else None)
+        if run_all:
+            base = _base_config(args)
+            valid = [job for job in jobsmod.list_jobs(base) if job.path.is_file()]
+            if not valid:
+                raise cfgmod.ConfigError("Es gibt noch keine Sicherung mit Konfiguration.")
+            for job in valid:  # nur installieren, wenn alle Konfigurationen gueltig sind
+                cfgmod.load(job.path)
+            program, arguments = scheduler.program_command(base, "backup --all --quiet")
+        else:
+            config = _load_config(args)  # nur installieren, wenn die Konfiguration gueltig ist
+            program, arguments = scheduler.program_command(str(config.path) if config.path else None)
         scheduler.install(name, program, arguments, delay_minutes=args.delay, daily_at=args.daily_at)
-        print(f"Aufgabe eingerichtet: {name}\n  Programm: {program} {arguments}\n  Start: {args.delay} Minute(n) nach Anmeldung" + (f" und taeglich {args.daily_at}" if args.daily_at else ""))
+        print(f"Aufgabe eingerichtet: {name}" + (" (alle Sicherungen nacheinander)" if run_all else "") + f"\n  Programm: {program} {arguments}\n  Start: {args.delay} Minute(n) nach Anmeldung" + (f" und taeglich {args.daily_at}" if args.daily_at else ""))
         return 0
     if args.action == "status":
         print(json.dumps(scheduler.status(name), indent=2, ensure_ascii=False))
@@ -211,6 +256,38 @@ def cmd_task(args: argparse.Namespace) -> int:
     removed = scheduler.uninstall(name)
     print(f"Aufgabe entfernt: {name}" if removed else f"Aufgabe nicht vorhanden: {name}")
     return 0
+
+
+def cmd_job(args: argparse.Namespace) -> int:
+    base = _base_config(args)
+    try:
+        if args.action == "list":
+            for job in jobsmod.list_jobs(base):
+                state = "" if job.path.is_file() else "  (noch keine Konfiguration)"
+                print(f"{job.name:<24}{job.path}{state}")
+            return 0
+        if not args.name:
+            print("Bitte den Namen der Sicherung angeben.", file=sys.stderr)
+            return EXIT_USAGE
+        if args.action == "add":
+            source = jobsmod.find(base, args.copy_from).path if args.copy_from else None
+            job = jobsmod.create(base, args.name, source)
+            print(f"Sicherung angelegt: {job.name}\n  Konfiguration: {job.path}\n  Bitte Sicherungsziel und Quellen anpassen (--job {job.name} config show) und dann mit --job {job.name} backup sichern.")
+            return 0
+        job = jobsmod.find(base, args.name)
+        if job.standard:
+            print("Die Standard-Sicherung kann nicht entfernt werden.", file=sys.stderr)
+            return 1
+        try:
+            scheduler.uninstall(jobsmod.task_name(scheduler.default_task_name(), job.name))
+        except scheduler.SchedulerError as error:
+            print(f"Hinweis: Aufgabe nicht entfernt: {error}", file=sys.stderr)
+        jobsmod.remove(base, job.name)
+        print(f"Sicherung entfernt: {job.name} (nur die Konfiguration und ihre Aufgabe; bereits gesicherte Daten im Ziel bleiben erhalten)")
+        return 0
+    except cfgmod.ConfigError as error:
+        print(str(error), file=sys.stderr)
+        return 1
 
 
 def _install_dir() -> str:
@@ -284,7 +361,7 @@ def cmd_shortcut(args: argparse.Namespace) -> int:
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import main_gui
 
-    return main_gui(args.config, tray_start=getattr(args, "tray", False))
+    return main_gui(_base_config(args) if (args.config or getattr(args, "job", None)) else None, tray_start=getattr(args, "tray", False), job=getattr(args, "job", None))
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -334,6 +411,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="SuperPyBackup", description="Inkrementelle, versionierte Sicherung der Windows-Benutzerordner.")
     parser.add_argument("--config", help="Pfad zur config.json (Standard: %%LOCALAPPDATA%%\\SuperPyBackup\\config.json)")
+    parser.add_argument("--job", help="Name der Sicherung (Standard: die Hauptsicherung); weitere Sicherungen verwaltet der Befehl 'job'")
     parser.add_argument("--version", action="store_true", help="Version anzeigen")
     sub = parser.add_subparsers(dest="command")
 
@@ -343,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     kind_group.add_argument("--full", action="store_true", help="Vollsicherung erzwingen: alle Dateien neu kopieren, eigenstaendiger Stand (legt auch bei vorhandenem Tagesstand einen weiteren an)")
     kind_group.add_argument("--incremental", action="store_true", help="Inkrement erzwingen: nur Geaendertes kopieren, Unveraendertes per Hardlink (ohne Vorgaenger wird trotzdem voll gesichert)")
     backup.add_argument("--quiet", action="store_true", help="keine Ausgabe (fuer die geplante Aufgabe)")
+    backup.add_argument("--all", action="store_true", help="alle Sicherungen nacheinander ausfuehren (eine fehlerhafte haelt die uebrigen nicht auf)")
     backup.set_defaults(func=cmd_backup)
 
     lst = sub.add_parser("list", help="Sicherungsstaende auflisten")
@@ -372,9 +451,16 @@ def build_parser() -> argparse.ArgumentParser:
     task = sub.add_parser("task", help="Windows-Aufgabe verwalten")
     task.add_argument("action", choices=["install", "set", "status", "check", "uninstall"])
     task.add_argument("--name", help="Aufgabenname (muss mit SuperPyBackup beginnen)")
+    task.add_argument("--all", action="store_true", help="Aufgabe fuer alle Sicherungen (fuehrt 'backup --all' aus) statt fuer die gewaehlte Sicherung")
     task.add_argument("--delay", type=int, default=2, help="Minuten nach der Anmeldung (Standard 2)")
     task.add_argument("--daily-at", help="zusaetzlich taeglich um HH:MM")
     task.set_defaults(func=cmd_task)
+
+    job = sub.add_parser("job", help="Mehrere Sicherungen verwalten (anzeigen, anlegen, entfernen)")
+    job.add_argument("action", choices=["list", "add", "remove"])
+    job.add_argument("name", nargs="?", help="Name der Sicherung (Buchstaben, Ziffern, . _ -)")
+    job.add_argument("--copy-from", help="bei add: Einstellungen einer vorhandenen Sicherung uebernehmen (z. B. Standard)")
+    job.set_defaults(func=cmd_job)
 
     update = sub.add_parser("update", help="Updates pruefen/installieren")
     update.add_argument("action", choices=["check", "install", "rollback"])
@@ -435,6 +521,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return EXIT_USAGE
     try:
+        args.base_config = args.config
+        if args.job and args.command not in ("job", "gui"):
+            args.config = str(jobsmod.find(_base_config(args), args.job).path)
         return args.func(args)
     except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
         print(str(error), file=sys.stderr)

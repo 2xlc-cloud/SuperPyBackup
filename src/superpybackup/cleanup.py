@@ -70,7 +70,7 @@ def _target(config: cfgmod.Config, identity: Identity) -> str:
     root = config.backup_root
     if not root or not os.path.isabs(root):
         raise CleanupError("Sicherungsziel ist nicht als absoluter Pfad konfiguriert.")
-    target = os.path.join(root, identity.folder)
+    target = config.target_dir(identity)
     if not os.path.isdir(fsutil.fs(target)):
         raise CleanupError(f"Im Sicherungsziel gibt es keinen Ordner fuer diesen Benutzer: {target}")
     try:

@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, tray as trayicon, updater, winapi
+from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, jobs as jobsmod, manifest as mf, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, tray as trayicon, updater, winapi
 from . import icon as appicon
 from .identity import get_identity
 from . import runlog
@@ -84,16 +84,20 @@ EXTERNAL_REFRESH_SECONDS = 5  # so oft wird das Protokoll einer extern gestartet
 
 
 class App(tk.Tk):
-    def __init__(self, config_path: str | os.PathLike[str] | None = None, *, task_name: str | None = None, hidden: bool = False, tray: bool = False, start_in_tray: bool = False, autostart_name: str | None = None) -> None:
+    def __init__(self, config_path: str | os.PathLike[str] | None = None, *, task_name: str | None = None, hidden: bool = False, tray: bool = False, start_in_tray: bool = False, autostart_name: str | None = None, job: str | None = None) -> None:
         super().__init__()
         self.title(f"SuperPyBackup {__version__}")
         self.geometry("980x720")
         self.minsize(860, 620)
         if hidden:
             self.withdraw()
-        self.config_path = Path(config_path) if config_path else cfgmod.default_config_path()
-        self.task_name = task_name or scheduler.default_task_name()
-        self.update_task_name = scheduler.update_task_name(self.task_name)
+        self.base_config_path = Path(config_path) if config_path else cfgmod.default_config_path()  # Hauptkonfiguration (Standard)
+        self.config_path = self.base_config_path  # Konfiguration der gewaehlten Sicherung
+        self.job = cfgmod.STANDARD_JOB
+        self.base_task_name = task_name or scheduler.default_task_name()
+        self.task_name = self.base_task_name  # Aufgabe der gewaehlten Sicherung
+        self.update_task_name = scheduler.update_task_name(self.base_task_name)
+        self.all_task_name = jobsmod.all_task_name(self.base_task_name)
         self.autostart_name = autostart_name or autostart.DEFAULT_NAME
         self.tray: trayicon.TrayIcon | None = None  # Symbol im Infobereich (nur im echten Programmstart)
         self._tray_events: queue.Queue = queue.Queue()
@@ -125,7 +129,9 @@ class App(tk.Tk):
         self._style()
         self._build_ui()
         self.apply_theme(self.theme)  # nach dem Aufbau: auch tk-Widgets und Titelleiste einfaerben
+        self._apply_job(job)
         self.load_config()
+        self.refresh_jobs()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._set_window_icon()
         if tray:
@@ -225,10 +231,15 @@ class App(tk.Tk):
         self.config_data.setdefault("gui", {})["theme"] = new
         message = "Darstellung: " + ("dunkel" if new == "dark" else "hell")
         try:
-            if self.config_path.is_file():
-                data = copy.deepcopy(self.config.data) if self.config else copy.deepcopy(self.config_data)
+            if self.base_config_path.is_file():  # die Darstellung gilt fuer alle Sicherungen und steht in der Hauptkonfiguration
+                if self.config_path == self.base_config_path:
+                    data = copy.deepcopy(self.config.data) if self.config else copy.deepcopy(self.config_data)
+                else:
+                    data = copy.deepcopy(cfgmod.load(self.base_config_path, require_target=False).data)
                 data.setdefault("gui", {})["theme"] = new
-                self.config = cfgmod.save(self.config_path, data)
+                saved = cfgmod.save(self.base_config_path, data)
+                if self.config_path == self.base_config_path:
+                    self.config = saved
         except (cfgmod.ConfigError, OSError) as error:
             # Die Darstellung wird trotzdem gewechselt; gespeichert wird beim naechsten Speichern der Einstellungen.
             message += f" (nicht gespeichert: {error})"
@@ -237,6 +248,15 @@ class App(tk.Tk):
         header = ttk.Frame(self, padding=(16, 12, 16, 4))
         header.pack(fill="x")
         ttk.Label(header, text="SuperPyBackup", style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text="Sicherung:").pack(side="left", padx=(24, 6))
+        self.var_job = tk.StringVar(value=cfgmod.STANDARD_JOB)
+        self.job_combo = ttk.Combobox(header, textvariable=self.var_job, state="readonly", width=22, values=[cfgmod.STANDARD_JOB])
+        self.job_combo.pack(side="left")
+        self.job_combo.bind("<<ComboboxSelected>>", lambda event: self.select_job(self.var_job.get()))
+        self.btn_job_new = ttk.Button(header, text="Neu …", width=7, command=self.new_job)
+        self.btn_job_new.pack(side="left", padx=(6, 0))
+        self.btn_job_remove = ttk.Button(header, text="Entfernen", width=10, command=self.remove_job, state="disabled")
+        self.btn_job_remove.pack(side="left", padx=(6, 0))
         self.header_status = ttk.Label(header, text="", style="Sub.TLabel")
         self.header_status.pack(side="right")
         self.btn_theme = ttk.Button(header, text="Hell", width=7, command=self.toggle_theme)
@@ -301,6 +321,8 @@ class App(tk.Tk):
         self.btn_backup_new.pack(side="left", padx=8)
         self.btn_backup_full = ttk.Button(buttons, text="Vollsicherung", command=lambda: self.start_backup(True, engine.FULL))
         self.btn_backup_full.pack(side="left")
+        self.btn_backup_all = ttk.Button(buttons, text="Alle Sicherungen", command=self.start_backup_all)
+        self.btn_backup_all.pack(side="left", padx=8)
         self.btn_cancel = ttk.Button(buttons, text="Abbrechen", command=self.cancel_backup, state="disabled")
         self.btn_cancel.pack(side="left")
         self.btn_cleanup = ttk.Button(buttons, text="Bereinigen …", command=self.start_cleanup)
@@ -476,6 +498,8 @@ class App(tk.Tk):
     def _build_task_tab(self) -> None:
         tab = self.tab_task
         ttk.Label(tab, text="Automatische Sicherung über die Windows-Aufgabenplanung", style="Sub.TLabel").pack(anchor="w")
+        self.task_title = ttk.Label(tab, text="", font=("Segoe UI", 10, "bold"))
+        self.task_title.pack(anchor="w", pady=(4, 0))
         form = ttk.Frame(tab)
         form.pack(fill="x", pady=10)
         self.var_delay = tk.StringVar(value="2")
@@ -493,6 +517,20 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Status aktualisieren", command=self.refresh_task).pack(side="left")
         ttk.Button(buttons, text="Aufgabe entfernen", command=self.remove_task).pack(side="left", padx=8)
         ttk.Label(tab, text="Die Aufgabe läuft im Benutzerkontext ohne Administratorrechte, ohne sichtbares Fenster, nie parallel, und sichert höchstens einmal pro Tag.", style="Sub.TLabel", wraplength=860).pack(anchor="w", pady=8)
+        all_box = ttk.LabelFrame(tab, text="Aufgabe für alle Sicherungen (nacheinander)", padding=8)
+        all_box.pack(fill="x", pady=(0, 8))
+        self.var_all_delay = tk.StringVar(value="3")
+        self.var_all_daily_on = tk.BooleanVar(value=False)
+        self.var_all_daily_at = tk.StringVar(value="20:00")
+        ttk.Label(all_box, text="Start nach der Anmeldung (Minuten):").grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(all_box, from_=0, to=60, width=6, textvariable=self.var_all_delay).grid(row=0, column=1, padx=8, sticky="w")
+        ttk.Checkbutton(all_box, text="Zusätzlich täglich um (HH:MM):", variable=self.var_all_daily_on).grid(row=0, column=2, padx=(18, 0), sticky="w")
+        ttk.Entry(all_box, textvariable=self.var_all_daily_at, width=8).grid(row=0, column=3, padx=8, sticky="w")
+        self.btn_all_task_install = ttk.Button(all_box, text="Aufgabe für alle einrichten / ändern", command=self.install_all_task)
+        self.btn_all_task_install.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(all_box, text="Status", command=self.refresh_all_task).grid(row=1, column=2, sticky="w", padx=(18, 0), pady=(8, 0))
+        ttk.Button(all_box, text="Entfernen", command=self.remove_all_task).grid(row=1, column=3, sticky="w", padx=8, pady=(8, 0))
+        ttk.Label(all_box, text="Führt alle Sicherungen nacheinander aus (nie parallel). Einzelne Sicherungen können zusätzlich eigene Aufgaben mit eigener Uhrzeit haben (oben die Sicherung wählen).", style="Sub.TLabel", wraplength=860).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
         box = ttk.LabelFrame(tab, text="Updateprüfung (Meldung bei neuer Version)", padding=8)
         box.pack(fill="x", pady=(0, 8))
         self.var_upd_delay = tk.StringVar(value="5")
@@ -666,7 +704,7 @@ class App(tk.Tk):
             if not self._external:
                 self._external = True
                 self._external_failed = False
-                self._external_log = os.path.join(self._log_dir(), runlog.LIVE_NAME)  # Live-Datei: alle Ereignisse und jede Datei
+                self._external_log = self._live_log_path()  # Live-Datei: alle Ereignisse und jede Datei
                 self._external_offset = 0
                 self._external_next = 0.0
                 self._append(self.backup_log, "", clear=True)
@@ -689,6 +727,26 @@ class App(tk.Tk):
         else:
             return
         self._update_icon_state()
+
+    def _live_log_path(self) -> str:
+        """Live-Datei der gerade laufenden Sicherung: unter den Protokollordnern aller Sicherungen die zuletzt beschriebene."""
+        folders = {self._log_dir()}
+        for job in jobsmod.list_jobs(self.base_config_path):
+            try:
+                if job.path.is_file():
+                    folders.add(cfgmod.load(job.path, require_target=False).log_dir)
+            except cfgmod.ConfigError:
+                continue
+        best, newest = os.path.join(self._log_dir(), runlog.LIVE_NAME), -1.0
+        for folder in folders:
+            path = os.path.join(folder, runlog.LIVE_NAME)
+            try:
+                modified = os.path.getmtime(path)
+            except OSError:
+                continue
+            if modified > newest:
+                best, newest = path, modified
+        return best
 
     def _read_external_log(self) -> None:
         """Haengt neue Zeilen der Live-Datei an die Anzeige an (Sicherungs-Reiter und, falls offen, Protokoll-Reiter)."""
@@ -748,11 +806,101 @@ class App(tk.Tk):
 
     def _set_busy_state(self, running: bool) -> None:
         state = "disabled" if running else "normal"
-        for button in (self.btn_backup, self.btn_backup_new, self.btn_backup_full, self.btn_restore, self.btn_save, self.btn_verify, self.btn_cleanup):
+        for button in (self.btn_backup, self.btn_backup_new, self.btn_backup_full, self.btn_backup_all, self.btn_job_new, self.btn_restore, self.btn_save, self.btn_verify, self.btn_cleanup):
             button.configure(state=state)
         self.btn_cancel.configure(state="normal" if running and self._backup_running else "disabled")
         self._refresh_tray_menu(running)
         self._update_icon_state(running)
+
+    # ------------------------------------------------------------------ Mehrere Sicherungen
+    def _apply_job(self, name: str | None) -> None:
+        """Waehlt beim Start eine Sicherung (ohne die Oberflaeche neu zu laden)."""
+        if jobsmod.is_standard(name):
+            return
+        try:
+            job = jobsmod.find(self.base_config_path, name)
+        except cfgmod.ConfigError:
+            return
+        self._set_job(job)
+
+    def _set_job(self, job: jobsmod.Job) -> None:
+        self.job = job.name
+        self.config_path = job.path
+        self.task_name = jobsmod.task_name(self.base_task_name, job.name)
+        self.var_job.set(job.name)
+        self.title(f"SuperPyBackup {__version__}" + ("" if job.standard else f" – {job.name}"))
+        self.btn_job_remove.configure(state="disabled" if job.standard else "normal")
+
+    def refresh_jobs(self) -> None:
+        names = [job.name for job in jobsmod.list_jobs(self.base_config_path)]
+        self.job_combo.configure(values=names)
+        self.var_job.set(self.job)
+        self.btn_job_remove.configure(state="disabled" if jobsmod.is_standard(self.job) else "normal")
+
+    def select_job(self, name: str) -> bool:
+        """Wechselt zur gewaehlten Sicherung (Einstellungen, Staende, Aufgabe, Protokoll)."""
+        if name == self.job:
+            return True
+        if self._ops > 0 or self._external:
+            self.var_job.set(self.job)
+            self.set_status("Bitte warten: Ein Vorgang läuft noch, danach kann die Sicherung gewechselt werden.")
+            return False
+        try:
+            job = jobsmod.find(self.base_config_path, name)
+        except cfgmod.ConfigError as error:
+            self.var_job.set(self.job)
+            self.error("Sicherung wählen", str(error))
+            return False
+        self._set_job(job)
+        self.last_result = None
+        self.snapshot_refs = {}
+        self._tree_cache = None
+        self._tree_manifest = None
+        self._append(self.backup_log, "", clear=True)
+        self.result_label.configure(text="")
+        self._last_run_failed = False
+        self._update_icon_state()
+        self.load_config()
+        self._tab_changed(None)
+        self.set_status(f"Sicherung gewählt: {job.name}")
+        return True
+
+    def new_job(self) -> None:
+        name = self.ask_text("Neue Sicherung", "Name der neuen Sicherung (Buchstaben, Ziffern, . _ -):", "")
+        if not name:
+            return
+        try:
+            job = jobsmod.create(self.base_config_path, name.strip(), self.config_path)
+        except cfgmod.ConfigError as error:
+            self.error("Neue Sicherung", str(error))
+            return
+        self.refresh_jobs()
+        self.select_job(job.name)
+        self.notebook.select(self.tab_settings)
+        self.set_status(f"Sicherung {job.name} angelegt (Einstellungen der bisherigen Sicherung übernommen): Bitte Sicherungsziel und Quellen prüfen und speichern.")
+
+    def remove_job(self) -> None:
+        if jobsmod.is_standard(self.job):
+            return
+        name = self.job
+        if self._ops > 0 or self._external:
+            self.set_status("Bitte warten: Ein Vorgang läuft noch.")
+            return
+        if not self.ask_yes_no("Sicherung entfernen", f"Die Sicherung „{name}“ entfernen?\n\nEntfernt werden nur ihre Einstellungen und ihre Windows-Aufgabe. Bereits gesicherte Daten im Sicherungsziel bleiben erhalten."):
+            return
+        try:
+            scheduler.uninstall(self.task_name)
+        except scheduler.SchedulerError as error:
+            self.error("Aufgabe nicht entfernt", str(error))
+        try:
+            jobsmod.remove(self.base_config_path, name)
+        except cfgmod.ConfigError as error:
+            self.error("Sicherung entfernen", str(error))
+            return
+        self.refresh_jobs()
+        self.select_job(cfgmod.STANDARD_JOB)
+        self.refresh_jobs()
+        self.set_status(f"Sicherung {name} entfernt (gesicherte Daten bleiben erhalten).")
 
     # ------------------------------------------------------------------ Konfiguration
     def load_config(self) -> None:
@@ -772,6 +920,11 @@ class App(tk.Tk):
             self.settings_message.configure(text=str(error), style="Bad.TLabel")
         self._fill_settings(self.config_data)
         configured = self.config_data.get("gui", {}).get("theme", "dark")
+        if self.config_path != self.base_config_path:  # Darstellung kommt immer aus der Hauptkonfiguration
+            try:
+                configured = cfgmod.load(self.base_config_path, require_target=False).data["gui"]["theme"] if self.base_config_path.is_file() else self.theme
+            except (cfgmod.ConfigError, KeyError):
+                configured = self.theme
         if configured != self.theme:
             self.apply_theme(configured)
         self.refresh_summary()
@@ -891,7 +1044,7 @@ class App(tk.Tk):
         else:
             def work() -> tuple[str, str]:
                 identity = get_identity()
-                target = os.path.join(config.backup_root, identity.folder)
+                target = config.target_dir(identity)
                 refs = snapshots.list_snapshots(target, identity.sid, ("Daily",))
                 complete = [ref for ref in refs if ref.manifest and ref.manifest.status == mf.COMPLETE]
                 if not os.path.isdir(config.backup_root):
@@ -953,6 +1106,93 @@ class App(tk.Tk):
 
         self.run_async(lambda: engine.run_backup(config, new_snapshot=True if new_snapshot else None, mode=mode, echo=writer, progress=on_progress, cancel=self._cancel), self._backup_done, op=True)
 
+    def start_backup_all(self) -> None:
+        """Fuehrt alle Sicherungen nacheinander aus (je Sicherung ein Lauf, eine fehlerhafte haelt die uebrigen nicht auf)."""
+        if self._backup_running:
+            return
+        if self._ops:
+            self.set_status("Bitte warten, ein anderer Vorgang läuft noch.")
+            return
+        configs: list[cfgmod.Config] = []
+        problems: list[str] = []
+        for job in jobsmod.list_jobs(self.base_config_path):
+            if not job.path.is_file():
+                continue
+            try:
+                configs.append(cfgmod.load(job.path, require_target=True))
+            except cfgmod.ConfigError as error:
+                problems.append(f"{job.name}: {str(error).splitlines()[0]}")
+        if not configs:
+            self.error("Sicherung nicht möglich", "Es gibt keine Sicherung mit vollständiger Konfiguration.\n\n" + "\n".join(problems))
+            return
+        self._cancel.clear()
+        self._progress = ("scan", 0, 0, "Starte ...")
+        self._backup_running = True
+        self._set_busy_state(True)
+        self._append(self.backup_log, "", clear=True)
+        self.result_label.configure(text="Alle Sicherungen laufen nacheinander ...", style="TLabel")
+        self.set_status("Alle Sicherungen laufen ...")
+        self._last_run_failed = False
+        self._tray_status("Alle Sicherungen laufen ...")
+        writer = QueueWriter(self.messages)
+
+        def on_progress(phase: str, done: int, total: int, text: str) -> None:
+            self._progress = (phase, done, total, text)
+
+        def work() -> list[tuple[str, engine.RunResult | BaseException]]:
+            results: list[tuple[str, engine.RunResult | BaseException]] = []
+            for config in configs:
+                if self._cancel.is_set():
+                    break
+                name = config.job or cfgmod.STANDARD_JOB
+                writer.write(f"\n=== Sicherung {name} ===\n")
+                try:
+                    results.append((name, engine.run_backup(config, echo=writer, progress=on_progress, cancel=self._cancel)))
+                except Exception as error:  # noqa: BLE001 - eine Sicherung darf die uebrigen nicht aufhalten
+                    results.append((name, error))
+            return results
+
+        self._all_problems = problems
+        self._all_configs = {(config.job or cfgmod.STANDARD_JOB): config for config in configs}
+        self.run_async(work, self._backup_all_done, op=True)
+
+    def _backup_all_done(self, results: list | None, error: BaseException | None) -> None:
+        self._backup_running = False
+        self._progress = None
+        self.progress.configure(mode="determinate", value=0)
+        self.progress_label.configure(text="")
+        self._set_busy_state(False)
+        lines: list[str] = []
+        failed = bool(error)
+        if error:
+            lines.append(f"Fehler: {error}")
+        for name, outcome in results or []:
+            if isinstance(outcome, BaseException):
+                failed = True
+                lines.append(f"{name}: Fehler: {outcome}")
+                self.notify(notifymod.ERROR, f"Sicherung fehlgeschlagen ({name})", str(outcome))
+                continue
+            state = {engine.COMPLETE: "erfolgreich", engine.ALREADY: "heute bereits gesichert", engine.BUSY: "übersprungen (andere Sicherung aktiv)", engine.PARTIAL: "nur teilweise erfolgreich", engine.FAILED: "fehlgeschlagen"}[outcome.status]
+            failed = failed or outcome.status in (engine.FAILED, engine.PARTIAL)
+            lines.append(f"{name}: {state}" + (f" – {outcome.message}" if outcome.message and outcome.status in (engine.FAILED, engine.PARTIAL, engine.BUSY) else ""))
+            message = notifymod.backup_message(outcome, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(outcome.kind, ""), "" if name == cfgmod.STANDARD_JOB else name)
+            config = self._all_configs.get(name)
+            if message and config is not None:
+                if notifymod.enabled_for(config.notifications, message[0]):
+                    threading.Thread(target=notifymod.show, args=(message[1], message[2]), daemon=True).start()
+        for problem in getattr(self, "_all_problems", []):
+            failed = True
+            lines.append(f"Übersprungen – {problem}")
+        if self._cancel.is_set():
+            lines.append("Abgebrochen.")
+        self._last_run_failed = failed
+        self._update_icon_state()
+        self.result_label.configure(text="Alle Sicherungen:\n" + "\n".join(lines), style="Bad.TLabel" if failed else "Ok.TLabel")
+        self.set_status("Alle Sicherungen beendet." + (" Mit Fehlern." if failed else ""))
+        self._tray_status(f"{time.strftime('%H:%M')} Alle Sicherungen beendet" + (" (mit Fehlern)." if failed else "."))
+        self.snapshot_refs = {}
+        self.refresh_summary()
+
     def _backup_done(self, result: engine.RunResult | None, error: BaseException | None) -> None:
         self._backup_running = False
         self._progress = None
@@ -986,7 +1226,7 @@ class App(tk.Tk):
         self.result_label.configure(text=text, style="Ok.TLabel" if result.status in (engine.COMPLETE, engine.ALREADY) else "Bad.TLabel" if result.status in (engine.FAILED, engine.PARTIAL) else "TLabel")
         self.set_status(text.splitlines()[0])
         self._tray_status(f"{time.strftime('%H:%M')} {text.splitlines()[0]}")
-        message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""))
+        message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""), "" if jobsmod.is_standard(self.job) else self.job)
         if message:
             self.notify(*message)
         elif result.status == engine.ALREADY:
@@ -1082,7 +1322,7 @@ class App(tk.Tk):
         if config is None:
             return None
         identity = get_identity()
-        return os.path.join(config.backup_root, identity.folder), identity.sid
+        return config.target_dir(identity), identity.sid
 
     def refresh_snapshots(self) -> None:
         located = self._target_dir()
@@ -1256,7 +1496,11 @@ class App(tk.Tk):
         self._append(self.task_text, f"Eingerichtet: {self.task_name}\nProgramm: {program} {arguments}\n", clear=True)
         self.refresh_summary()
 
+    def _update_task_title(self) -> None:
+        self.task_title.configure(text=f"Sicherung: {self.job}   |   Aufgabe: {self.task_name}")
+
     def refresh_task(self) -> None:
+        self._update_task_title()
         def done(info: dict | None, error: BaseException | None) -> None:
             if error:
                 self._append(self.task_text, f"Fehler: {error}\n", clear=True)
@@ -1301,8 +1545,8 @@ class App(tk.Tk):
             except ValueError as error:
                 raise scheduler.SchedulerError("Die Verzögerung muss eine ganze Zahl sein.") from error
             daily = self.var_upd_daily_at.get().strip() if self.var_upd_daily_on.get() else None
-            config = cfgmod.load(self.config_path, require_target=False)
-            program, arguments = scheduler.program_command(str(self.config_path), "update check --quiet")
+            config = cfgmod.load(self.base_config_path, require_target=False)
+            program, arguments = scheduler.program_command(str(self.base_config_path), "update check --quiet")
             scheduler.install(self.update_task_name, program, arguments, delay_minutes=delay, daily_at=daily, description="SuperPyBackup: stille Pruefung auf neue Versionen mit Desktop-Meldung.")
         except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
             self.error("Prüfaufgabe nicht eingerichtet", str(error))
@@ -1324,6 +1568,50 @@ class App(tk.Tk):
 
         self.run_async(lambda: scheduler.status(self.update_task_name), done)
 
+    # ---- Aufgabe fuer alle Sicherungen
+    def install_all_task(self) -> None:
+        try:
+            try:
+                delay = int(self.var_all_delay.get())
+            except ValueError as error:
+                raise scheduler.SchedulerError("Die Verzögerung muss eine ganze Zahl sein.") from error
+            daily = self.var_all_daily_at.get().strip() if self.var_all_daily_on.get() else None
+            valid = [job for job in jobsmod.list_jobs(self.base_config_path) if job.path.is_file()]
+            if not valid:
+                raise cfgmod.ConfigError("Es gibt noch keine Sicherung mit Konfiguration.")
+            for job in valid:  # nur einrichten, wenn alle Konfigurationen gueltig sind
+                cfgmod.load(job.path, require_target=True)
+            program, arguments = scheduler.program_command(str(self.base_config_path), "backup --all --quiet")
+            scheduler.install(self.all_task_name, program, arguments, delay_minutes=delay, daily_at=daily, description="SuperPyBackup: alle Sicherungen nacheinander.")
+        except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
+            self.error("Aufgabe für alle nicht eingerichtet", str(error))
+            return
+        self.set_status("Aufgabe für alle Sicherungen eingerichtet.")
+        self._append(self.task_text, f"Eingerichtet: {self.all_task_name}\nProgramm: {program} {arguments}\nSicherungen: {', '.join(job.name for job in valid)}\n", clear=True)
+
+    def refresh_all_task(self) -> None:
+        def done(info: dict | None, error: BaseException | None) -> None:
+            if error:
+                self._append(self.task_text, f"Fehler: {error}\n", clear=True)
+            elif not info["exists"]:
+                self._append(self.task_text, f"Die Aufgabe {self.all_task_name} ist nicht eingerichtet.\n", clear=True)
+            else:
+                lines = [f"Aufgabe: {info['name']}", f"Aktiv: {'ja' if info['enabled'] else 'NEIN'}", f"Start nach Anmeldung: {info['delay_minutes']} Min.", f"Täglich: {info['daily_at'] or 'nein'}", f"Programm: {info['command']}", f"Argumente: {info['arguments']}"]
+                self._append(self.task_text, "\n".join(lines) + "\n", clear=True)
+
+        self.run_async(lambda: scheduler.status(self.all_task_name), done)
+
+    def remove_all_task(self) -> None:
+        if not self.ask_yes_no("Aufgabe für alle entfernen", "Die Windows-Aufgabe für alle Sicherungen entfernen?\n(Die Aufgaben der einzelnen Sicherungen bleiben bestehen.)"):
+            return
+        try:
+            removed = scheduler.uninstall(self.all_task_name)
+        except scheduler.SchedulerError as error:
+            self.error("Aufgabe nicht entfernt", str(error))
+            return
+        self._append(self.task_text, "Aufgabe für alle entfernt.\n" if removed else "Die Aufgabe für alle war nicht eingerichtet.\n", clear=True)
+        self.set_status("Aufgabe für alle entfernt." if removed else "Keine Aufgabe für alle vorhanden.")
+
     def remove_update_task(self) -> None:
         if not self.ask_yes_no("Prüfaufgabe entfernen", "Die Windows-Aufgabe für die Updateprüfung entfernen?"):
             return
@@ -1338,7 +1626,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ Update
     def check_update(self) -> None:
         try:
-            update_settings = (cfgmod.load(self.config_path, require_target=False) if self.config_path.is_file() else cfgmod.from_dict({}, require_target=False)).update
+            update_settings = (cfgmod.load(self.base_config_path, require_target=False) if self.base_config_path.is_file() else cfgmod.from_dict({}, require_target=False)).update
         except cfgmod.ConfigError as error:
             self.error("Update", str(error))
             return
@@ -1464,7 +1752,7 @@ class App(tk.Tk):
         if not tray.start():
             return  # kein Infobereich verfuegbar: Fenster verhaelt sich wie gewohnt
         self.tray = tray
-        if start_hidden and self.config_path.is_file():
+        if start_hidden and self.base_config_path.is_file():
             self.withdraw()
 
     def _tray_items(self, busy: bool | None = None) -> list:
@@ -1480,6 +1768,7 @@ class App(tk.Tk):
             item("backup", "Jetzt sichern", enabled=not busy),
             item("backup_new", "Weiteren Stand anlegen", enabled=not busy),
             item("backup_full", "Vollsicherung", enabled=not busy),
+            item("backup_all", "Alle Sicherungen sichern", enabled=not busy),
             item("cancel", "Sicherung abbrechen", enabled=self._backup_running),
             None,
             item("autostart", "Mit Windows starten", checked=autostart_on),
@@ -1502,6 +1791,8 @@ class App(tk.Tk):
             if self.config is None or not self.config.backup_root:
                 self.show_window()  # Dialog soll sichtbar sein
             self.start_backup(name != "backup", engine.FULL if name == "backup_full" else None)
+        elif name == "backup_all":
+            self.start_backup_all()
         elif name == "cancel":
             self.cancel_backup()
         elif name == "autostart":
@@ -1534,7 +1825,7 @@ class App(tk.Tk):
             else:
                 self.set_status(f"Desktop-Verknüpfung angelegt: {path}")
 
-        self.run_async(lambda: shortcutmod.create(str(self.config_path)), done)
+        self.run_async(lambda: shortcutmod.create(str(self.base_config_path)), done)
 
     def remove_desktop_shortcut(self) -> None:
         try:
@@ -1553,7 +1844,7 @@ class App(tk.Tk):
         """Gleicht den Autostart-Eintrag (HKCU Run) mit dem Haken in den Einstellungen ab."""
         try:
             if self.var_autostart.get():
-                autostart.enable(str(self.config_path), self.autostart_name)
+                autostart.enable(str(self.base_config_path), self.autostart_name)
                 self.set_status("Autostart eingerichtet: SuperPyBackup startet beim Anmelden im Infobereich.")
             elif autostart.disable(self.autostart_name):
                 self.set_status("Autostart entfernt.")
@@ -1599,7 +1890,7 @@ class _PrefixWriter:
         pass
 
 
-def main_gui(config_path: str | None = None, tray_start: bool = False) -> int:
+def main_gui(config_path: str | None = None, tray_start: bool = False, job: str | None = None) -> int:
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # scharfe Darstellung auf Bildschirmen mit Skalierung
     except (AttributeError, OSError):
@@ -1613,7 +1904,7 @@ def main_gui(config_path: str | None = None, tray_start: bool = False) -> int:
                 return 0
     except Exception:  # noqa: BLE001 - die Einzelinstanz-Pruefung darf den Start nie verhindern
         mutex = None
-    app = App(config_path, tray=use_tray, start_in_tray=tray_start)
+    app = App(config_path, tray=use_tray, start_in_tray=tray_start, job=job)
     app.mainloop()
     if mutex is not None:
         mutex.close()

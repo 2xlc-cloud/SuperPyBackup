@@ -319,7 +319,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             if fsutil.is_within(root, source.path) or fsutil.is_within(source.path, root):
                 raise BackupError(f"Quelle und Sicherungsziel ueberlappen: {source.path}")
         log.info("Quellen: " + "; ".join(f"{s.name}={s.path}" for s in sources))
-        target = os.path.join(root, identity.folder)
+        target = config.target_dir(identity)
         result.target = target
         log.target = target
         os.makedirs(fsutil.fs(target), exist_ok=True)
