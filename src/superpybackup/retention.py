@@ -1,4 +1,6 @@
-"""Aufbewahrung: 7 Kalendertage / 12 Kalendermonate / 5 Kalenderjahre (konfigurierbar).
+"""Aufbewahrung: 7 Kalendertage / 12 abgeschlossene Kalendermonate / 5 abgeschlossene Kalenderjahre (konfigurierbar).
+
+Monats- und Jahresstaende entstehen erst, wenn der Monat bzw. das Jahr vorbei ist (siehe engine.promote_archives).
 
 Es wird erst nach einem erfolgreichen neuen Stand bereinigt. Ein Ordner wird nur entfernt, wenn
 sein Name einen gueltigen Stand ausweist; Defektes wird gemeldet, aber nie geloescht.
@@ -30,8 +32,8 @@ def cutoffs(as_of: date, daily: int, monthly: int, yearly: int) -> Windows:
     """Fruehestes noch aufzubewahrendes Datum je Stufe (Kalenderfenster inkl. heutigem Tag/Monat/Jahr)."""
     return Windows(
         daily=date.fromordinal(as_of.toordinal() - (daily - 1)),
-        monthly=_add_months(date(as_of.year, as_of.month, 1), -(monthly - 1)),
-        yearly=date(as_of.year - (yearly - 1), 1, 1),
+        monthly=_add_months(date(as_of.year, as_of.month, 1), -monthly),  # abgeschlossene Monate: der laufende hat noch keinen Monatsstand
+        yearly=date(as_of.year - yearly, 1, 1),  # abgeschlossene Jahre
     )
 
 

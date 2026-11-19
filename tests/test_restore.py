@@ -173,8 +173,6 @@ def test_resolve_snapshot_specs(populated):
     target = str(populated.target)
     sid = populated.identity.sid
     assert restore.resolve_snapshot(target, "latest", sid).name == "2026-03-10"
-    assert restore.resolve_snapshot(target, "monthly/2026-03", sid).tier == "Monthly"
-    assert restore.resolve_snapshot(target, "yearly/2026", sid).tier == "Yearly"
     assert restore.resolve_snapshot(target, str(populated.snapshot("Daily", "2026-03-10")), sid).name == "2026-03-10"
     for bad in ("daily/2099-01-01", "foo", "daily/../../x"):
         with pytest.raises(restore.RestoreError):
@@ -182,14 +180,18 @@ def test_resolve_snapshot_specs(populated):
 
 
 def test_list_distinguishes_tiers_and_status(populated):
+    assert populated.run("2027-01-05 12:00:00").status == engine.COMPLETE  # Monat und Jahr 2026 sind vorbei: Monats- und Jahresstand entstehen
     refs = snapshots.list_snapshots(str(populated.target), populated.identity.sid)
     assert sorted((ref.tier, ref.manifest.status) for ref in refs) == [("Daily", "Complete"), ("Monthly", "Complete"), ("Yearly", "Complete")]
+    target, sid = str(populated.target), populated.identity.sid
+    assert restore.resolve_snapshot(target, "monthly/2026-03", sid).tier == "Monthly"
+    assert restore.resolve_snapshot(target, "yearly/2026", sid).tier == "Yearly"
 
 
 def test_cli_end_to_end_list_restore_verify(populated, tmp_path):
     populated.write_config_file()
     listing = populated.cli("list")
-    assert listing.returncode == 0 and "daily/2026-03-10" in listing.stdout and "monthly/2026-03" in listing.stdout
+    assert listing.returncode == 0 and "daily/2026-03-10" in listing.stdout
     out = tmp_path / "cli-out"
     restored = populated.cli("restore", "--snapshot", "daily/2026-03-10", "--path", "Test/projekt/b.txt", "--dest", str(out))
     assert restored.returncode == 0, restored.stderr

@@ -220,7 +220,7 @@ def test_restore_tab_lists_selects_and_restores(app, env, tmp_path):
     app.refresh_snapshots()
     app.wait_idle(30)
     spec = "daily/" + time.strftime("%Y-%m-%d")
-    assert spec in app.snapshot_refs and "monthly/" + time.strftime("%Y-%m") in app.snapshot_refs
+    assert spec in app.snapshot_refs and "monthly/" + time.strftime("%Y-%m") not in app.snapshot_refs  # Monatsstand erst nach Monatsende
     assert app.snap_tree.item("tier-Daily", "text").startswith("Tagesstände (1)")
     app.snap_tree.selection_set(spec)
     app.update()

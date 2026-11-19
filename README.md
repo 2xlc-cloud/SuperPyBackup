@@ -16,7 +16,7 @@ voneinander installier- und betreibbar; SuperPyBackup verändert SuperPSBackup n
 * Einschaltbare **Desktop-Meldungen** (Windows-Toast, Absender „SuperPyBackup“) bei abgeschlossener Sicherung, Wiederherstellung, Prüfung, Bereinigung, neuer Version/Update und Fehlern – in der Oberfläche und auch wenn die Sicherung als geplante Aufgabe unsichtbar läuft
 * Eigene **Aufgabe für die Updateprüfung** (Reiter „Aufgabe“): prüft still auf neue Versionen und meldet sie einmal je Version; installiert wird nie ohne Bestätigung
 * Zusätzlich **Vollsicherungen**: alle Dateien werden neu kopiert, der Stand ist eigenständig und hängt an keinem Vorgänger – automatisch alle 7 Tage (einstellbar) oder auf Wunsch
-* Aufbewahrung 7 Tage / 12 Monate / 5 Jahre, Wiederherstellung (Datei, Ordner, ursprünglicher Ort), Windows-Aufgabe, GitHub-Update
+* Aufbewahrung 7 Tage / 12 abgeschlossene Monate / 5 abgeschlossene Jahre (Monats- und Jahresstände entstehen erst nach Monats- bzw. Jahresende, nicht schon beim ersten Stand), Wiederherstellung (Datei, Ordner, ursprünglicher Ort), Windows-Aufgabe, GitHub-Update
 
 ## Programme
 
@@ -128,13 +128,13 @@ wird sie nur einmal gesichert.
 ```
 <backup_root>\<Benutzer>-<SID>\
     Daily\2026-11-17\            ein regulärer Stand pro Kalendertag (weitere: 2026-11-17_143015_ab12cd34)
-    Monthly\2026-11\             erster vollständige Stand des Monats
-    Yearly\2026\                 erster vollständige Stand des Jahres
+    Monthly\2026-10\             letzter vollständiger Stand eines abgeschlossenen Monats (entsteht erst, wenn der Monat vorbei ist)
+    Yearly\2025\                 letzter Monatsstand eines abgeschlossenen Jahres (entsteht erst, wenn das Jahr vorbei ist)
         .snapshot.json           Manifest (Status, Dateiliste mit SHA-256, Zeitstempel, Attribute)
         Desktop\...  Documents\...  Projekte\...     ← die gesicherten Dateien (je Quelle ein Ordner)
 ```
 
-Ein Stand kann gleichzeitig Tages-, Monats- und Jahresstand sein, ohne Speicher zu verdoppeln (Hardlinks).
+Der Monatsstand wird beim ersten Lauf nach Monatsende aus dem letzten vollständigen Tagesstand dieses Monats angelegt (sofern er noch vorhanden ist, Tagesstände werden 7 Tage aufbewahrt), der Jahresstand beim ersten Lauf nach Jahresende aus dem letzten Monatsstand des Jahres. Ein Stand kann gleichzeitig Tages-, Monats- und Jahresstand sein, ohne Speicher zu verdoppeln (Hardlinks). Bereits vorhandene Monats-/Jahresstände bleiben unverändert.
 Gesicherte Dateien sind **schreibgeschützt**, damit eine versehentliche Änderung nicht über Hardlinks mehrere Stände verändert.
 Zum Löschen eines Standes den Ordner im Explorer löschen (Schreibschutz-Rückfrage bestätigen) oder die Aufbewahrung arbeiten lassen.
 

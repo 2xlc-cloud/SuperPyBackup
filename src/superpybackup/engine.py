@@ -243,6 +243,38 @@ def ensure_archive(target: str, tier: str, name: str, source_dir: str, manifest:
                 log.warn(f"Arbeitsordner konnte nicht entfernt werden: {stage}: {error}")
 
 
+def promote_archives(target: str, sid: str, today: date, log: RunLog, stats: Stats) -> list[str]:
+    """Legt Monats- und Jahresstaende erst an, wenn der Monat bzw. das Jahr vorbei ist (nie schon beim ersten Stand).
+
+    * Monatsstand: der letzte vollstaendige Tagesstand eines abgeschlossenen Monats (Zustand am Monatsende), falls noch vorhanden.
+    * Jahresstand: der letzte Monatsstand eines abgeschlossenen Jahres.
+    Vorhandene Staende bleiben unveraendert. Muss vor der Aufbewahrung laufen, solange die Tagesstaende noch da sind.
+    """
+    this_month, this_year = f"{today:%Y-%m}", f"{today:%Y}"
+    created: list[str] = []
+    latest: dict[str, snapshots.SnapshotRef] = {}
+    for ref in snapshots.list_snapshots(target, sid, ("Daily",)):
+        if ref.manifest is None or ref.manifest.status != mf.COMPLETE:
+            continue
+        month = ref.manifest.date[:7]
+        if month < this_month and (month not in latest or (ref.manifest.date, ref.name) > (latest[month].manifest.date, latest[month].name)):
+            latest[month] = ref
+    for month, ref in sorted(latest.items()):
+        if ensure_archive(target, "Monthly", month, ref.path, ref.manifest, log, stats):
+            created.append(f"Monthly/{month}")
+    newest: dict[str, snapshots.SnapshotRef] = {}
+    for ref in snapshots.list_snapshots(target, sid, ("Monthly",)):
+        if ref.manifest is None or ref.manifest.status != mf.COMPLETE:
+            continue
+        year = ref.name[:4]
+        if year < this_year and (year not in newest or ref.name > newest[year].name):
+            newest[year] = ref
+    for year, ref in sorted(newest.items()):
+        if ensure_archive(target, "Yearly", year, ref.path, ref.manifest, log, stats):
+            created.append(f"Yearly/{year}")
+    return created
+
+
 def decide_kind(requested: str | None, base: snapshots.SnapshotRef | None, last_full: snapshots.SnapshotRef | None, day: str, full_every_days: int, use_links: bool) -> tuple[str, str]:
     """Bestimmt die Art des Laufs und nennt den Grund. requested: FULL, INCREMENTAL oder None (automatisch)."""
     if requested == FULL:
@@ -489,8 +521,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
         if status == mf.COMPLETE:
             result.status = COMPLETE
             log.info(f"Tagesstand freigegeben: {os.path.relpath(final, target)}")
-            ensure_archive(target, "Monthly", day[:7], final, manifest, log, stats)
-            ensure_archive(target, "Yearly", day[:4], final, manifest, log, stats)
+            promote_archives(target, identity.sid, as_of.date(), log, stats)
             stats.retention_removed = retention.apply_retention(target, identity.sid, as_of.date(), config.retention["daily"], config.retention["monthly"], config.retention["yearly"], log)
         else:
             result.status = PARTIAL

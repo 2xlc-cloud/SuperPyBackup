@@ -27,7 +27,7 @@ def test_first_full_backup(env):
     manifest = mf.load(str(snap), sid=env.identity.sid)
     assert manifest and manifest.status == mf.COMPLETE and len(manifest.files) == 4
     assert result.stats.new == 4 and result.stats.scanned == 4 and result.stats.bytes_transferred == manifest.total_bytes
-    assert tier_names(env, "Monthly") == ["2026-03"] and tier_names(env, "Yearly") == ["2026"]
+    assert tier_names(env, "Monthly") == [] and tier_names(env, "Yearly") == []  # erst wenn der Monat/das Jahr vorbei ist
     assert not [p for p in env.target.iterdir() if p.name.startswith(".incomplete")]
 
 
@@ -176,7 +176,7 @@ def test_locked_file_yields_partial_snapshot(env):
     again = env.run("2026-03-10 18:00:00")
     assert again.status == engine.COMPLETE, again.message
     assert os.path.basename(again.snapshot_path) == "2026-03-10"
-    assert tier_names(env, "Monthly") == ["2026-03"]
+    assert tier_names(env, "Monthly") == []
 
 
 def test_partial_snapshot_is_never_a_base_nor_counts_as_done(env):
@@ -241,8 +241,8 @@ def test_hardlink_counts_and_read_only_protection(env):
     for day in ("10", "11", "12"):
         env.run(f"2026-03-{day} 12:00:00")
     stored = env.snapshot("Daily", "2026-03-12") / "Test" / "a.txt"
-    # drei Tagesstaende + Monats- und Jahresstand teilen sich eine Datei
-    assert os.stat(stored).st_nlink == 5
+    # die drei Tagesstaende teilen sich eine Datei (Monats- und Jahresstand gibt es erst nach Monats-/Jahresende)
+    assert os.stat(stored).st_nlink == 3
     with pytest.raises(PermissionError):
         stored.write_text("Manipulation")  # schreibgeschuetzt: Hardlinks koennten sonst alle Staende veraendern
     assert (env.snapshot("Daily", "2026-03-10") / "Test" / "a.txt").read_text() == "unveraendert"

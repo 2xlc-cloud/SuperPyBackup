@@ -20,11 +20,11 @@ def run_on(env, day: date, content: str | None = None, **kwargs):
 def test_cutoffs_are_calendar_windows():
     window = retention.cutoffs(date(2026, 3, 10), 7, 12, 5)
     assert window.daily == date(2026, 3, 4)  # heute + 6 Vortage = 7 Kalendertage
-    assert window.monthly == date(2025, 4, 1)  # laufender Monat + 11 Vormonate
-    assert window.yearly == date(2022, 1, 1)  # laufendes Jahr + 4 Vorjahre
+    assert window.monthly == date(2025, 3, 1)  # 12 abgeschlossene Monate (der laufende hat noch keinen Monatsstand)
+    assert window.yearly == date(2021, 1, 1)  # 5 abgeschlossene Jahre
     assert retention.cutoffs(date(2026, 1, 31), 1, 1, 1).daily == date(2026, 1, 31)
     assert retention.cutoffs(date(2024, 3, 1), 7, 12, 5).daily == date(2024, 2, 24)  # Schaltjahr
-    assert retention.cutoffs(date(2026, 1, 15), 7, 3, 5).monthly == date(2025, 11, 1)  # Jahreswechsel
+    assert retention.cutoffs(date(2026, 1, 15), 7, 3, 5).monthly == date(2025, 10, 1)  # Jahreswechsel
 
 
 # 7 ------------------------------------------------------------------------------------------
@@ -42,7 +42,7 @@ def test_gaps_in_daily_runs_do_not_extend_the_window(env):
     for day in (date(2026, 3, 1), date(2026, 3, 2), date(2026, 3, 20)):
         run_on(env, day, f"x{day}")
     assert daily_names(env) == ["2026-03-20"]  # nur Kalendertage zaehlen, nicht die Anzahl der Staende
-    assert "2026-03" in tier_names(env, "Monthly")
+    assert tier_names(env, "Monthly") == []  # der Monat ist noch nicht vorbei
 
 
 # 8 ------------------------------------------------------------------------------------------
@@ -50,25 +50,37 @@ def test_monthly_retention_keeps_last_twelve_calendar_months(env):
     months = [(2025 + (index // 12), index % 12 + 1) for index in range(15)]  # 2025-01 .. 2026-03
     for year, month in months:
         assert run_on(env, date(year, month, 15), f"m{year}{month}").status == engine.COMPLETE
-    assert tier_names(env, "Monthly") == [f"2025-{m:02d}" for m in range(4, 13)] + ["2026-01", "2026-02", "2026-03"]
+    assert tier_names(env, "Monthly") == [f"2025-{m:02d}" for m in range(3, 13)] + ["2026-01", "2026-02"]  # 12 abgeschlossene Monate, der laufende (2026-03) fehlt noch
     # Monatsstaende bleiben unabhaengig von der taeglichen Rotation lesbar
-    first = env.snapshot("Monthly", "2025-04") / "Test" / "a.txt"
-    assert first.read_text() == "m20254"
+    first = env.snapshot("Monthly", "2025-03") / "Test" / "a.txt"
+    assert first.read_text() == "m20253"
 
 
-def test_first_successful_stand_of_month_is_the_monthly_stand(env):
+def test_monthly_and_yearly_stands_appear_only_when_the_period_is_over(env):
     run_on(env, date(2026, 3, 3), "erster")
+    assert tier_names(env, "Monthly") == [] and tier_names(env, "Yearly") == []  # nicht schon beim ersten Stand
     run_on(env, date(2026, 3, 20), "spaeter")
-    assert (env.snapshot("Monthly", "2026-03") / "Test" / "a.txt").read_text() == "erster"  # nicht ueberschrieben
-    assert (env.snapshot("Yearly", "2026") / "Test" / "a.txt").read_text() == "erster"
+    run_on(env, date(2026, 3, 31), "monatsende")
+    assert tier_names(env, "Monthly") == [] and tier_names(env, "Yearly") == []  # auch am letzten Tag des Monats noch nicht
+    run_on(env, date(2026, 4, 2), "april")
+    assert tier_names(env, "Monthly") == ["2026-03"] and tier_names(env, "Yearly") == []  # Monat vorbei: der Stand vom Monatsende
+    assert (env.snapshot("Monthly", "2026-03") / "Test" / "a.txt").read_text() == "monatsende"
+    run_on(env, date(2026, 4, 20), "spaeter im april")
+    assert (env.snapshot("Monthly", "2026-03") / "Test" / "a.txt").read_text() == "monatsende"  # vorhandener Monatsstand bleibt unveraendert
+    run_on(env, date(2026, 12, 31), "jahresende")
+    assert tier_names(env, "Yearly") == []
+    run_on(env, date(2027, 1, 3), "neues jahr")
+    assert tier_names(env, "Monthly") == ["2026-03", "2026-04", "2026-12"] and tier_names(env, "Yearly") == ["2026"]
+    assert (env.snapshot("Yearly", "2026") / "Test" / "a.txt").read_text() == "jahresende"  # letzter Monatsstand des Jahres
+    assert os.path.samefile(env.snapshot("Yearly", "2026") / "Test" / "a.txt", env.snapshot("Monthly", "2026-12") / "Test" / "a.txt")  # gleiche Dateien, kein Duplikat
 
 
 # 9 ------------------------------------------------------------------------------------------
 def test_yearly_retention_keeps_last_five_calendar_years(env):
     for year in range(2019, 2027):
         assert run_on(env, date(year, 6, 1), f"j{year}").status == engine.COMPLETE
-    assert tier_names(env, "Yearly") == ["2022", "2023", "2024", "2025", "2026"]
-    assert (env.snapshot("Yearly", "2022") / "Test" / "a.txt").read_text() == "j2022"
+    assert tier_names(env, "Yearly") == ["2021", "2022", "2023", "2024", "2025"]  # 5 abgeschlossene Jahre, 2026 laeuft noch
+    assert (env.snapshot("Yearly", "2021") / "Test" / "a.txt").read_text() == "j2021"
 
 
 # 10 -----------------------------------------------------------------------------------------
@@ -77,17 +89,17 @@ def test_combined_retention_over_six_years(env):
     for index, day in enumerate(runs):
         assert run_on(env, day, f"stand {index}").status == engine.COMPLETE
     assert daily_names(env) == ["2026-03-01"]
-    assert tier_names(env, "Monthly") == [f"2025-{m:02d}" for m in range(4, 13)] + ["2026-01", "2026-02", "2026-03"]
-    assert tier_names(env, "Yearly") == ["2022", "2023", "2024", "2025", "2026"]
+    assert tier_names(env, "Monthly") == [f"2025-{m:02d}" for m in range(3, 13)] + ["2026-01", "2026-02"]
+    assert tier_names(env, "Yearly") == ["2021", "2022", "2023", "2024", "2025"]
     # Ein Stand ist gleichzeitig Tages-, Monats- und Jahresstand und teilt sich dieselben Dateien
     log = RunLog(str(env.home / "Logs"))
     for ref in snapshots.list_snapshots(str(env.target), env.identity.sid):
         assert ref.manifest and ref.manifest.status == mf.COMPLETE
         assert restore.verify_snapshot(ref.path, log, env.identity.sid)[1] == []
-    daily, yearly = env.snapshot("Daily", "2026-03-01") / "Test" / "a.txt", env.snapshot("Yearly", "2026") / "Test" / "a.txt"
-    assert daily.read_text() == "stand 74" and yearly.read_text() == "stand 72"  # Jahresstand = erster Stand von 2026-01
-    jan = env.snapshot("Monthly", "2026-01") / "Test" / "a.txt"
-    assert os.path.samefile(jan, yearly)  # erster Stand des Jahres ist zugleich Monats- und Jahresstand (keine Duplikate)
+    daily, yearly = env.snapshot("Daily", "2026-03-01") / "Test" / "a.txt", env.snapshot("Yearly", "2025") / "Test" / "a.txt"
+    assert daily.read_text() == "stand 74" and yearly.read_text() == "stand 71"  # Jahresstand = letzter Monatsstand von 2025 (Dezember)
+    dec = env.snapshot("Monthly", "2025-12") / "Test" / "a.txt"
+    assert os.path.samefile(dec, yearly)  # Dezember-Stand ist zugleich Monats- und Jahresstand (keine Duplikate)
 
 
 def test_custom_retention_values_are_respected(env):
