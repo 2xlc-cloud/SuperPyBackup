@@ -278,6 +278,28 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_usb_log(args: argparse.Namespace) -> int:
+    state = scheduler.usb_log_enabled()
+    label = {True: "eingeschaltet", False: "ausgeschaltet", None: "nicht lesbar"}[state]
+    if args.action == "status":
+        print(f"Ereignisprotokoll fuer 'Laufwerk angesteckt' ({scheduler.USB_LOG}): {label}")
+        return 0
+    wanted = args.action == "on"
+    if state is wanted:
+        print(f"Das Ereignisprotokoll ist bereits {label}.")
+        return 0
+    if not vss.is_admin():
+        print("Das Ereignisprotokoll laesst sich nur mit Administratorrechten umschalten: in einer als Administrator gestarteten Eingabeaufforderung ausfuehren (oder in der Oberflaeche den Knopf fuer Administratorrechte benutzen).", file=sys.stderr)
+        return 1
+    try:
+        scheduler.set_usb_log(wanted)
+    except scheduler.SchedulerError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    print(f"Ereignisprotokoll {'eingeschaltet' if wanted else 'ausgeschaltet'}.")
+    return 0
+
+
 def _prepare_usb_log() -> str | None:
     """Stellt sicher, dass das Ereignisprotokoll fuer 'Laufwerk angesteckt' eingeschaltet ist. Liefert eine Fehlermeldung oder None."""
     state = scheduler.usb_log_enabled()
@@ -616,6 +638,10 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--delay", type=int, default=2, help="Minuten nach der Anmeldung (Standard 2)")
     task.add_argument("--daily-at", help="zusaetzlich taeglich um HH:MM")
     task.add_argument("--retry-minutes", type=int, default=0, help="alle N Minuten (5-1440) erneut versuchen und bei jeder Netzwerkverbindung starten, solange das Ziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar); 0 = aus")
+    usb_log = sub.add_parser("usb-log", help="Windows-Ereignisprotokoll fuer 'Laufwerk angesteckt' anzeigen/ein-/ausschalten (Einschalten nur mit Administratorrechten)")
+    usb_log.add_argument("action", choices=["status", "on", "off"])
+    usb_log.set_defaults(func=cmd_usb_log)
+
     task.add_argument("--on-usb", action="store_true", help="zusaetzlich beim Anstecken eines Laufwerks starten (schaltet bei Administratorrechten das noetige Windows-Ereignisprotokoll ein; sonst Hinweis)")
     task.add_argument("--elevated", action="store_true", help="Aufgabe mit hoechsten Rechten (Administrator) einrichten bzw. pruefen: noetig, damit Schattenkopien (VSS) gesperrte Dateien sichern koennen")
     task.set_defaults(func=cmd_task)

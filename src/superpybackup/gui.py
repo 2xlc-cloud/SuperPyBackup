@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, credstore, engine, faq, fsutil, jobs as jobsmod, manifest as mf, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, staleness, tray as trayicon, updater, winapi
+from . import __version__, autostart, elevate, cleanup as cleanupmod, config as cfgmod, credstore, engine, faq, fsutil, jobs as jobsmod, manifest as mf, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, staleness, tray as trayicon, updater, winapi
 from . import icon as appicon
 from .identity import get_identity
 from . import runlog
@@ -115,6 +115,7 @@ class App(tk.Tk):
         self.last_result: engine.RunResult | None = None
         self.last_restore: restoremod.RestoreResult | None = None
         self.show_preview: Callable[[str, restoremod.Preview], None] = self._show_preview_window  # fuer Tests ersetzbar
+        self.elevated_runner: Callable[[list[str]], tuple[int, str]] = elevate.run_cli  # fuer Tests ersetzbar: startet einen Befehl nach Windows-Abfrage als Administrator
         self._loaded_spec: str | None = None  # Stand, dessen Inhalt gerade im Baum steht
         self.search_dialog: tk.Toplevel | None = None
         self.search_results: dict[str, restoremod.FileVersion] = {}
@@ -558,6 +559,13 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Status aktualisieren", command=self.refresh_task).pack(side="left")
         ttk.Button(buttons, text="Aufgabe entfernen", command=self.remove_task).pack(side="left", padx=8)
         ttk.Label(tab, text="Die Aufgabe läuft im Benutzerkontext ohne Administratorrechte, ohne sichtbares Fenster, nie parallel, und sichert höchstens einmal pro Tag.", style="Sub.TLabel", wraplength=860).pack(anchor="w", pady=8)
+        admin_box = ttk.LabelFrame(tab, text="Administratorrechte (nur auf Anfrage)", padding=8)
+        admin_box.pack(fill="x", pady=(0, 8))
+        self.btn_admin_task = ttk.Button(admin_box, text="Aufgabe als Administrator einrichten …", command=self.install_task_as_admin)
+        self.btn_admin_task.grid(row=0, column=0, sticky="w")
+        self.btn_admin_usb_log = ttk.Button(admin_box, text="Ereignisprotokoll für „Laufwerk angesteckt“ einschalten …", command=self.enable_usb_log_as_admin)
+        self.btn_admin_usb_log.grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Label(admin_box, text="Windows fragt vorher nach der Administrator-Bestätigung. Die Aufgabe läuft dann mit höchsten Rechten (Schattenkopien für gesperrte Dateien) und nutzt die Werte oben; mit dem Haken „Laufwerk angesteckt“ wird das Ereignisprotokoll gleich mit eingeschaltet. Die Oberfläche selbst bleibt ohne Administratorrechte.", style="Sub.TLabel", wraplength=860).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
         all_box = ttk.LabelFrame(tab, text="Aufgabe für alle Sicherungen (nacheinander)", padding=8)
         all_box.pack(fill="x", pady=(0, 8))
         self.var_all_delay = tk.StringVar(value="3")
@@ -1858,6 +1866,62 @@ class App(tk.Tk):
         except ValueError as error:
             raise scheduler.SchedulerError("Die Wiederholung muss eine ganze Zahl sein (0 = aus, sonst 5 bis 1440 Minuten).") from error
 
+    # ---- Administratorrechte auf Anfrage
+    def _run_as_admin(self, title: str, arguments: list[str], then=None) -> None:
+        """Startet `SuperPyBackupCmd <arguments>` nach der Windows-Abfrage als Administrator und zeigt das Ergebnis im Aufgaben-Reiter."""
+        if self._ops:
+            self.set_status("Bitte warten, ein anderer Vorgang läuft noch.")
+            return
+        self.set_status(f"{title}: Windows fragt nach der Administrator-Bestätigung …")
+
+        def done(result: tuple[int, str] | None, error: BaseException | None) -> None:
+            if isinstance(error, elevate.ElevationDeclined):
+                self._append(self.task_text, f"{title}: abgebrochen – die Administrator-Abfrage wurde abgelehnt. Es wurde nichts geändert.\n", clear=True)
+                self.set_status(f"{title}: abgebrochen.")
+                return
+            if error or result is None:
+                self._append(self.task_text, f"{title}: Fehler: {error}\n", clear=True)
+                self.error(title, str(error))
+                return
+            code, output = result
+            self._append(self.task_text, f"{title}: {'erfolgreich' if code == 0 else f'fehlgeschlagen (Rückgabewert {code})'}\n{output}\n", clear=True)
+            self.set_status(f"{title}: {'erfolgreich' if code == 0 else 'fehlgeschlagen'}.")
+            if code != 0:
+                self.error(title, output or f"Rückgabewert {code}")
+            elif then is not None:
+                then()
+
+        self.run_async(lambda: self.elevated_runner(arguments), done, op=True)
+
+    def install_task_as_admin(self) -> None:
+        """Richtet die Aufgabe dieser Sicherung mit höchsten Rechten ein (Windows fragt vorher nach Administratorrechten)."""
+        try:
+            delay, daily = self._task_form()
+            retry = self._retry_minutes(self.var_retry)
+            if retry != 0 and not 5 <= retry <= 1440 or not 0 <= delay <= 60:
+                raise scheduler.SchedulerError("Wiederholung: 0 (aus) oder 5 bis 1440 Minuten; Start nach der Anmeldung: 0 bis 60 Minuten.")
+            cfgmod.load(self.config_path, require_target=True)
+        except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
+            self.error("Aufgabe nicht eingerichtet", str(error))
+            return
+        if not self.ask_yes_no("Als Administrator einrichten", "Die Aufgabe wird mit höchsten Rechten eingerichtet (damit Schattenkopien gesperrte Dateien sichern können).\n\nWindows fragt gleich nach der Administrator-Bestätigung. Fortfahren?"):
+            return
+        usb = self.var_usb.get()
+        arguments = ["--config", str(self.config_path), "task", "install", "--name", self.task_name, "--delay", str(delay), "--elevated"]
+        if daily:
+            arguments += ["--daily-at", daily]
+        if retry:
+            arguments += ["--retry-minutes", str(retry)]
+        if usb:
+            arguments += ["--on-usb"]
+        self._run_as_admin("Aufgabe als Administrator", arguments, then=self.refresh_summary)  # die Ausgabe bleibt stehen; „Status aktualisieren“ zeigt die Aufgabe
+
+    def enable_usb_log_as_admin(self) -> None:
+        """Schaltet das Windows-Ereignisprotokoll für „Laufwerk angesteckt“ ein (Windows fragt vorher nach Administratorrechten)."""
+        if not self.ask_yes_no("Ereignisprotokoll einschalten", "Das Windows-Ereignisprotokoll „DriverFrameworks-UserMode“ wird eingeschaltet, damit die Aufgabe beim Anstecken eines Laufwerks starten kann.\n\nWindows fragt gleich nach der Administrator-Bestätigung. Fortfahren?"):
+            return
+        self._run_as_admin("Ereignisprotokoll", ["usb-log", "on"])
+
     def install_task(self) -> None:
         try:
             delay, daily = self._task_form()
@@ -1865,7 +1929,7 @@ class App(tk.Tk):
             retry = self._retry_minutes(self.var_retry)
             usb = self.var_usb.get()
             if usb and not scheduler.usb_log_enabled():
-                raise scheduler.SchedulerError("Das Windows-Ereignisprotokoll für „Laufwerk angesteckt“ ist ausgeschaltet. Es lässt sich nur mit Administratorrechten einschalten: einmal in einer als Administrator gestarteten Eingabeaufforderung „SuperPyBackupCmd.exe task install --on-usb“ ausführen; danach hier den Haken setzen.")
+                raise scheduler.SchedulerError("Das Windows-Ereignisprotokoll für „Laufwerk angesteckt“ ist ausgeschaltet. Es lässt sich nur mit Administratorrechten einschalten: unten „Ereignisprotokoll … einschalten“ (Windows fragt nach der Bestätigung) oder „Aufgabe als Administrator einrichten“ benutzen.")
             program, arguments = scheduler.program_command(str(self.config_path), "backup --quiet" + (" --if-available" if retry or usb else ""))
             scheduler.install(self.task_name, program, arguments, delay_minutes=delay, daily_at=daily, retry_minutes=retry, on_usb=usb)
         except (cfgmod.ConfigError, scheduler.SchedulerError) as error:

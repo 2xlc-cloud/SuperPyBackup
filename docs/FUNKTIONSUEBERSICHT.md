@@ -42,6 +42,7 @@ Grundlage ist die Analyse des PowerShell-Projekts `SuperPSBackup` (Stand 1.1.0, 
 | 33 | Ausschlüsse je Sicherung: Ordnermuster mit `/` am Ende, Größengrenze `backup.max_file_size_mb` (Einstellungen) | neu | `engine`, `config`, `gui` |
 | 34 | Geschwindigkeit: gepuffertes Live-Protokoll, schnellere Pfadprüfung, parallele Verarbeitung der Dateien (`backup.threads`, Standard 8); gemessen, siehe README | neu | `runlog`, `fsutil`, `manifest`, `engine` |
 | 35 | Start beim Anstecken eines Laufwerks: Ereignisauslöser (DriverFrameworks-UserMode, ID 2003/2100, 30 s Verzögerung) in der Aufgabe, `task install --on-usb` schaltet mit Administratorrechten das Ereignisprotokoll ein, Haken in der Oberfläche | neu | `scheduler`, `cli`, `gui` |
+| 36 | Administratorrechte auf Anfrage: Knöpfe im Reiter Aufgabe starten nach Bestätigung die Windows-Abfrage und einen Hilfsbefehl als Administrator (Aufgabe mit höchsten Rechten, Ereignisprotokoll einschalten); `usb-log status/on/off`; Oberfläche bleibt ohne Administratorrechte | neu | `elevate`, `gui`, `cli` |
 | 19 | Migration vom Altnamen UserProfileBackup | entfällt (neues Projekt) | – |
 
 ## 2. Gefundene Schwächen der Referenz (nicht übernommen)

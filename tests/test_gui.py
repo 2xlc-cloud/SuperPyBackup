@@ -1196,3 +1196,47 @@ def test_task_tab_device_trigger_needs_the_event_log(app, env, monkeypatch):
     app.refresh_task()
     app.wait_idle(30)
     assert app.var_usb.get() is True and "Beim Anstecken eines Laufwerks: ja" in app.task_text.get("1.0", "end")
+
+
+def test_admin_buttons_run_the_console_with_the_form_values_after_confirmation(app, env):
+    from superpybackup import elevate
+
+    configure(app, env)
+    calls = []
+    outcome = {"result": (0, "Aufgabe eingerichtet: x")}
+
+    def runner(arguments):
+        calls.append(arguments)
+        if isinstance(outcome["result"], Exception):
+            raise outcome["result"]
+        return outcome["result"]
+
+    app.elevated_runner = runner
+    app.var_delay.set("5")
+    app.var_daily_on.set(True)
+    app.var_daily_at.set("06:30")
+    app.var_retry.set("20")
+    app.var_usb.set(True)
+    app.dialogs.answer = False
+    app.btn_admin_task.invoke()
+    assert calls == [] and app.dialogs.kinds("ja/nein")  # ohne Bestaetigung wird nichts gestartet
+    app.dialogs.answer = True
+    app.btn_admin_task.invoke()
+    app.wait_idle(30)
+    assert calls[0][:2] == ["--config", str(app.config_path)] and calls[0][2:6] == ["task", "install", "--name", app.task_name]
+    assert {"--elevated", "--on-usb"} <= set(calls[0]) and calls[0][calls[0].index("--delay") + 1] == "5"
+    assert calls[0][calls[0].index("--daily-at") + 1] == "06:30" and calls[0][calls[0].index("--retry-minutes") + 1] == "20"
+    assert "erfolgreich" in app.task_text.get("1.0", "end") and "Aufgabe eingerichtet: x" in app.task_text.get("1.0", "end")
+    errors_before = len(app.dialogs.kinds("fehler"))
+    outcome["result"] = elevate.ElevationDeclined("abgelehnt")  # Benutzer lehnt die Windows-Abfrage ab
+    app.btn_admin_usb_log.invoke()
+    app.wait_idle(30)
+    assert calls[-1] == ["usb-log", "on"] and "abgelehnt" in app.task_text.get("1.0", "end") and len(app.dialogs.kinds("fehler")) == errors_before
+    outcome["result"] = (1, "Zugriff verweigert")
+    app.btn_admin_usb_log.invoke()
+    app.wait_idle(30)
+    assert "fehlgeschlagen" in app.task_text.get("1.0", "end") and len(app.dialogs.kinds("fehler")) == errors_before + 1
+    app.var_retry.set("3")  # ungueltige Eingabe: gar nicht erst nach Administratorrechten fragen
+    count = len(calls)
+    app.btn_admin_task.invoke()
+    assert len(calls) == count and len(app.dialogs.kinds("fehler")) == errors_before + 2
