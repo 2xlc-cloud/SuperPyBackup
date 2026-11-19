@@ -64,11 +64,14 @@ class QueueWriter:
 
 
 class ScrollFrame(ttk.Frame):
-    """Scrollbarer Bereich für die Einstellungen."""
+    """Scrollbarer Bereich (Einstellungen, Aufgabe). Das Mausrad scrollt den gerade sichtbaren Bereich."""
+
+    _instances: list["ScrollFrame"] = []
 
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
         canvas = tk.Canvas(self, highlightthickness=0)
+        self.canvas = canvas
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         self.body = ttk.Frame(canvas)
         self.body.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -77,7 +80,19 @@ class ScrollFrame(ttk.Frame):
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units") if self.winfo_ismapped() else None)
+        ScrollFrame._instances.append(self)
+        self.bind("<Destroy>", lambda event: ScrollFrame._instances.remove(self) if event.widget is self and self in ScrollFrame._instances else None)
+        canvas.bind_all("<MouseWheel>", ScrollFrame._wheel)  # ein gemeinsamer Handler: mehrere Bereiche ueberschreiben sich nicht
+
+    @staticmethod
+    def _wheel(event: tk.Event) -> None:
+        for frame in list(ScrollFrame._instances):
+            try:
+                if frame.winfo_ismapped():
+                    frame.canvas.yview_scroll(int(-event.delta / 120), "units")
+                    return
+            except tk.TclError:
+                continue
 
 
 EXTERNAL_REFRESH_SECONDS = 5  # so oft wird das Protokoll einer extern gestarteten Sicherung neu gelesen
@@ -532,7 +547,12 @@ class App(tk.Tk):
         tab.rowconfigure(6, weight=1)
 
     def _build_task_tab(self) -> None:
-        tab = self.tab_task
+        # Unten bleibt die Ausgabe immer sichtbar; die vielen Einstellungen darueber scrollen, wenn das Fenster zu klein ist.
+        self.task_text = self._text_area(self.tab_task, 7)
+        self.task_text.container.pack(side="bottom", fill="x", pady=(6, 0))  # type: ignore[attr-defined]
+        scroll = ScrollFrame(self.tab_task)
+        scroll.pack(fill="both", expand=True)
+        tab = scroll.body
         ttk.Label(tab, text="Automatische Sicherung über die Windows-Aufgabenplanung", style="Sub.TLabel").pack(anchor="w")
         self.task_title = ttk.Label(tab, text="", font=("Segoe UI", 10, "bold"))
         self.task_title.pack(anchor="w", pady=(4, 0))
@@ -596,9 +616,7 @@ class App(tk.Tk):
         self.btn_update_task_install.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(box, text="Status", command=self.refresh_update_task).grid(row=1, column=2, sticky="w", padx=(18, 0), pady=(8, 0))
         ttk.Button(box, text="Entfernen", command=self.remove_update_task).grid(row=1, column=3, sticky="w", padx=8, pady=(8, 0))
-        ttk.Label(box, text="Die Aufgabe prüft still auf neue Versionen und meldet sie einmal je Version per Desktop-Meldung (unter Einstellungen einschalten). Es wird nie etwas installiert.", style="Sub.TLabel", wraplength=860).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        self.task_text = self._text_area(tab, 12)
-        self.task_text.container.pack(fill="both", expand=True)  # type: ignore[attr-defined]
+        ttk.Label(box, text="Die Aufgabe prüft still auf neue Versionen und meldet sie einmal je Version per Desktop-Meldung (unter Einstellungen einschalten). Installiert wird nur bei einem Pflichtupdate (mehr als 5 Versionen zurück).", style="Sub.TLabel", wraplength=860).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
     def _build_update_tab(self) -> None:
         tab = self.tab_update

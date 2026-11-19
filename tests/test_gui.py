@@ -1240,3 +1240,13 @@ def test_admin_buttons_run_the_console_with_the_form_values_after_confirmation(a
     count = len(calls)
     app.btn_admin_task.invoke()
     assert len(calls) == count and len(app.dialogs.kinds("fehler")) == errors_before + 2
+
+
+def test_task_tab_keeps_the_output_visible_in_a_small_window(app, env):
+    # Die Einstellungen scrollen, die Ausgabe steht fest unten (im ausgeblendeten Testfenster gibt es keine Pixelmasse, deshalb der Aufbau).
+    assert app.task_text.container.pack_info()["side"] == "bottom" and app.task_text.container.master is app.tab_task
+    scrolls = [child for child in app.tab_task.winfo_children() if isinstance(child, gui.ScrollFrame)]
+    assert len(scrolls) == 1 and scrolls[0].pack_info()["expand"] and app.btn_task_install.winfo_toplevel() is app
+    assert str(app.btn_task_install.master.master.master) == str(scrolls[0].canvas)  # Knoepfe liegen im scrollbaren Bereich
+    assert int(app.task_text.cget("height")) <= 8  # niedrige, feste Ausgabe: laesst den Einstellungen Platz
+    assert gui.ScrollFrame._instances and all(isinstance(frame, gui.ScrollFrame) for frame in gui.ScrollFrame._instances)
