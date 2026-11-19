@@ -56,12 +56,16 @@ def program_command(config_path: str | None, command_line: str = "backup --quiet
 DESCRIPTION = "SuperPyBackup: versionierte Sicherung der persoenlichen Benutzerordner."
 
 
-def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None, description: str = DESCRIPTION, elevated: bool = False, retry_minutes: int = 0) -> str:
+def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None, description: str = DESCRIPTION, elevated: bool = False, retry_minutes: int = 0, on_usb: bool = False) -> str:
     if not 0 <= delay_minutes <= 60:
         raise SchedulerError("Die Verzoegerung muss zwischen 0 und 60 Minuten liegen.")
     if retry_minutes != 0 and not 5 <= retry_minutes <= 1440:
         raise SchedulerError("Die Wiederholung muss 0 (aus) oder 5 bis 1440 Minuten betragen.")
     repeat = f"<Repetition><Interval>PT{retry_minutes}M</Interval></Repetition>" if retry_minutes else ""
+    usb = (
+        "<EventTrigger><Enabled>true</Enabled><Subscription>&lt;QueryList&gt;&lt;Query Id='0' Path='Microsoft-Windows-DriverFrameworks-UserMode/Operational'&gt;&lt;Select Path='Microsoft-Windows-DriverFrameworks-UserMode/Operational'&gt;*[System[Provider[@Name='Microsoft-Windows-DriverFrameworks-UserMode'] and (EventID=2003 or EventID=2100)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription><Delay>PT30S</Delay></EventTrigger>"
+        if on_usb else ""
+    )
     network = (
         "<EventTrigger><Enabled>true</Enabled><Subscription>&lt;QueryList&gt;&lt;Query Id='0' Path='Microsoft-Windows-NetworkProfile/Operational'&gt;&lt;Select Path='Microsoft-Windows-NetworkProfile/Operational'&gt;*[System[Provider[@Name='Microsoft-Windows-NetworkProfile'] and EventID=10000]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription><Delay>PT1M</Delay></EventTrigger>"
         if retry_minutes else ""
@@ -77,7 +81,7 @@ def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2,
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>{escape(description)}</Description></RegistrationInfo>
-  <Triggers><LogonTrigger>{repeat}<Enabled>true</Enabled><Delay>PT{delay_minutes}M</Delay><UserId>{escape(sid)}</UserId></LogonTrigger>{daily}{network}</Triggers>
+  <Triggers><LogonTrigger>{repeat}<Enabled>true</Enabled><Delay>PT{delay_minutes}M</Delay><UserId>{escape(sid)}</UserId></LogonTrigger>{daily}{network}{usb}</Triggers>
   <Principals><Principal id="User"><UserId>{escape(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>{'HighestAvailable' if elevated else 'LeastPrivilege'}</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
@@ -105,10 +109,10 @@ def _decode(data: bytes) -> str:
     return data.decode("latin-1")
 
 
-def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None, description: str = DESCRIPTION, elevated: bool = False, retry_minutes: int = 0) -> str:
+def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None, description: str = DESCRIPTION, elevated: bool = False, retry_minutes: int = 0, on_usb: bool = False) -> str:
     """Legt die Aufgabe an oder aktualisiert sie (idempotent). Aufgaben anderer Namen bleiben unberuehrt."""
     validate_name(name)
-    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at, description=description, elevated=elevated, retry_minutes=retry_minutes)
+    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at, description=description, elevated=elevated, retry_minutes=retry_minutes, on_usb=on_usb)
     with tempfile.TemporaryDirectory(prefix="superpybackup-task-") as folder:
         path = os.path.join(folder, "task.xml")
         with open(path, "wb") as handle:
@@ -150,7 +154,8 @@ def status(name: str) -> dict[str, object]:
         "delay_minutes": delay,
         "daily_at": daily,
         "retry_minutes": retry or 0,
-        "on_network": find(".//t:EventTrigger") is not None,
+        "on_network": any("NetworkProfile" in (e.text or "") for e in root.findall(".//t:EventTrigger/t:Subscription", NS)),
+        "on_usb": any("DriverFrameworks" in (e.text or "") for e in root.findall(".//t:EventTrigger/t:Subscription", NS)),
         "command": text_of(".//t:Actions/t:Exec/t:Command"),
         "arguments": text_of(".//t:Actions/t:Exec/t:Arguments"),
         # Windows laesst Standardwerte im exportierten XML weg: LeastPrivilege und IgnoreNew sind die Vorgaben.
@@ -178,6 +183,33 @@ def check(name: str, allow_elevated: bool = False) -> list[str]:
     if not command or not os.path.exists(command):
         problems.append(f"Programm der Aufgabe existiert nicht: {command}")
     return problems
+
+
+USB_LOG = "Microsoft-Windows-DriverFrameworks-UserMode/Operational"
+
+
+def usb_log_enabled() -> bool | None:
+    """Ist das Windows-Ereignisprotokoll eingeschaltet, das beim Anstecken eines Laufwerks Ereignisse schreibt? None, wenn nicht lesbar."""
+    try:
+        result = subprocess.run(["wevtutil.exe", "gl", USB_LOG], capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in _decode(result.stdout).splitlines():
+        if line.strip().lower().startswith("enabled:"):
+            return line.split(":", 1)[1].strip().lower() == "true"
+    return None
+
+
+def set_usb_log(enabled: bool) -> None:
+    """Schaltet das Ereignisprotokoll ein/aus. Braucht Administratorrechte (SchedulerError sonst)."""
+    try:
+        result = subprocess.run(["wevtutil.exe", "sl", USB_LOG, f"/e:{'true' if enabled else 'false'}"], capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SchedulerError(f"Ereignisprotokoll nicht umschaltbar: {error}") from error
+    if result.returncode != 0:
+        raise SchedulerError("Ereignisprotokoll nicht umschaltbar (Administratorrechte noetig): " + _decode(result.stderr or result.stdout).strip())
 
 
 def uninstall(name: str) -> bool:

@@ -545,9 +545,11 @@ class App(tk.Tk):
         ttk.Checkbutton(form, text="Zusätzlich täglich um (HH:MM):", variable=self.var_daily_on).grid(row=1, column=0, sticky="w", pady=6)
         ttk.Entry(form, textvariable=self.var_daily_at, width=8).grid(row=1, column=1, padx=8, sticky="w")
         self.var_retry = tk.StringVar(value="0")
+        self.var_usb = tk.BooleanVar(value=False)
         ttk.Label(form, text="Erneut versuchen alle (Minuten, 0 = aus):").grid(row=2, column=0, sticky="w")
         ttk.Spinbox(form, from_=0, to=1440, width=6, textvariable=self.var_retry).grid(row=2, column=1, padx=8, sticky="w")
         ttk.Label(form, text="… und bei jeder Netzwerkverbindung, solange das Sicherungsziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar). Ohne Fehlermeldung.", style="Sub.TLabel").grid(row=3, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(form, text="Auch beim Anstecken eines Laufwerks starten (das Windows-Ereignisprotokoll dafür muss einmal als Administrator eingeschaltet werden: task install --on-usb)", variable=self.var_usb).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
         buttons = ttk.Frame(tab)
         buttons.pack(fill="x")
         self.btn_task_install = ttk.Button(buttons, text="Aufgabe einrichten / ändern", style="Big.TButton", command=self.install_task)
@@ -1861,8 +1863,11 @@ class App(tk.Tk):
             delay, daily = self._task_form()
             config = cfgmod.load(self.config_path, require_target=True)
             retry = self._retry_minutes(self.var_retry)
-            program, arguments = scheduler.program_command(str(self.config_path), "backup --quiet" + (" --if-available" if retry else ""))
-            scheduler.install(self.task_name, program, arguments, delay_minutes=delay, daily_at=daily, retry_minutes=retry)
+            usb = self.var_usb.get()
+            if usb and not scheduler.usb_log_enabled():
+                raise scheduler.SchedulerError("Das Windows-Ereignisprotokoll für „Laufwerk angesteckt“ ist ausgeschaltet. Es lässt sich nur mit Administratorrechten einschalten: einmal in einer als Administrator gestarteten Eingabeaufforderung „SuperPyBackupCmd.exe task install --on-usb“ ausführen; danach hier den Haken setzen.")
+            program, arguments = scheduler.program_command(str(self.config_path), "backup --quiet" + (" --if-available" if retry or usb else ""))
+            scheduler.install(self.task_name, program, arguments, delay_minutes=delay, daily_at=daily, retry_minutes=retry, on_usb=usb)
         except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
             self.error("Aufgabe nicht eingerichtet", str(error))
             return
@@ -1885,9 +1890,10 @@ class App(tk.Tk):
             self.var_delay.set(str(info["delay_minutes"] if info["delay_minutes"] is not None else 2))
             self.var_daily_on.set(bool(info["daily_at"]))
             self.var_retry.set(str(info.get("retry_minutes") or 0))
+            self.var_usb.set(bool(info.get("on_usb")))
             if info["daily_at"]:
                 self.var_daily_at.set(info["daily_at"])
-            lines = [f"Aufgabe: {info['name']}", f"Aktiv: {'ja' if info['enabled'] else 'NEIN'}", f"Start nach Anmeldung: {info['delay_minutes']} Min.", f"Täglich: {info['daily_at'] or 'nein'}", f"Erneut versuchen: {str(info['retry_minutes']) + ' Min. und bei Netzwerkverbindung' if info.get('retry_minutes') else 'nein'}", f"Versteckt: {'ja' if info['hidden'] else 'nein'}", f"Rechte: {info['run_level']}", f"Parallele Instanzen: {info['multiple_instances']}", f"Programm: {info['command']}", f"Argumente: {info['arguments']}"]
+            lines = [f"Aufgabe: {info['name']}", f"Aktiv: {'ja' if info['enabled'] else 'NEIN'}", f"Start nach Anmeldung: {info['delay_minutes']} Min.", f"Täglich: {info['daily_at'] or 'nein'}", f"Erneut versuchen: {str(info['retry_minutes']) + ' Min. und bei Netzwerkverbindung' if info.get('retry_minutes') else 'nein'}", f"Beim Anstecken eines Laufwerks: {'ja' if info.get('on_usb') else 'nein'}", f"Versteckt: {'ja' if info['hidden'] else 'nein'}", f"Rechte: {info['run_level']}", f"Parallele Instanzen: {info['multiple_instances']}", f"Programm: {info['command']}", f"Argumente: {info['arguments']}"]
             self._append(self.task_text, "\n".join(lines) + "\n", clear=True)
 
         self.run_async(lambda: scheduler.status(self.task_name), done)

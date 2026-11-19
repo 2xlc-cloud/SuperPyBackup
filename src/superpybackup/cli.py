@@ -278,6 +278,23 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prepare_usb_log() -> str | None:
+    """Stellt sicher, dass das Ereignisprotokoll fuer 'Laufwerk angesteckt' eingeschaltet ist. Liefert eine Fehlermeldung oder None."""
+    state = scheduler.usb_log_enabled()
+    if state:
+        return None
+    if not vss.is_admin():
+        return ("Das Windows-Ereignisprotokoll fuer 'Laufwerk angesteckt' (" + scheduler.USB_LOG + ") ist ausgeschaltet"
+                + (" bzw. nicht lesbar" if state is None else "") + ". Es kann nur mit Administratorrechten eingeschaltet werden: "
+                "diesen Befehl einmal in einer als Administrator gestarteten Eingabeaufforderung ausfuehren (task install --on-usb); danach genuegt der normale Aufruf.")
+    try:
+        scheduler.set_usb_log(True)
+    except scheduler.SchedulerError as error:
+        return str(error)
+    print("Ereignisprotokoll fuer 'Laufwerk angesteckt' eingeschaltet.")
+    return None
+
+
 def cmd_task(args: argparse.Namespace) -> int:
     run_all = getattr(args, "all", False)
     if run_all and getattr(args, "job", None):
@@ -297,16 +314,24 @@ def cmd_task(args: argparse.Namespace) -> int:
                 raise cfgmod.ConfigError("Es gibt noch keine Sicherung mit Konfiguration.")
             for job in valid:  # nur installieren, wenn alle Konfigurationen gueltig sind
                 cfgmod.load(job.path)
-            program, arguments = scheduler.program_command(base, "backup --all --quiet" + (" --if-available" if retry else ""))
+            program, arguments = scheduler.program_command(base, "backup --all --quiet" + (" --if-available" if retry or getattr(args, "on_usb", False) else ""))
         else:
             config = _load_config(args)  # nur installieren, wenn die Konfiguration gueltig ist
-            program, arguments = scheduler.program_command(str(config.path) if config.path else None, "backup --quiet" + (" --if-available" if retry else ""))
+            program, arguments = scheduler.program_command(str(config.path) if config.path else None, "backup --quiet" + (" --if-available" if retry or getattr(args, "on_usb", False) else ""))
         elevated = bool(getattr(args, "elevated", False))
+        on_usb = bool(getattr(args, "on_usb", False))
+        if on_usb:
+            problem = _prepare_usb_log()
+            if problem:
+                print(problem, file=sys.stderr)
+                return 1
         if elevated and not vss.is_admin():
             print("Eine Aufgabe mit hoechsten Rechten (fuer Schattenkopien/VSS) kann nur aus einer als Administrator gestarteten Eingabeaufforderung eingerichtet werden.", file=sys.stderr)
             return 1
-        scheduler.install(name, program, arguments, delay_minutes=args.delay, daily_at=args.daily_at, elevated=elevated, retry_minutes=retry)
+        scheduler.install(name, program, arguments, delay_minutes=args.delay, daily_at=args.daily_at, elevated=elevated, retry_minutes=retry, on_usb=on_usb)
         print(f"Aufgabe eingerichtet: {name}" + (" (alle Sicherungen nacheinander)" if run_all else "") + f"\n  Programm: {program} {arguments}\n  Start: {args.delay} Minute(n) nach Anmeldung" + (f" und taeglich {args.daily_at}" if args.daily_at else "") + ("\n  Rechte: hoechste verfuegbare (Schattenkopien fuer gesperrte Dateien moeglich)" if elevated else ""))
+        if on_usb:
+            print("  Zusaetzlich: Start ca. 30 Sekunden nach dem Anstecken eines Laufwerks (Ereignisprotokoll DriverFrameworks-UserMode ist eingeschaltet)")
         if retry:
             print(f"  Wiederholung: alle {retry} Minuten und bei jeder Netzwerkverbindung, solange das Sicherungsziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar); ohne Fehler und ohne Meldung")
         return 0
@@ -591,6 +616,7 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--delay", type=int, default=2, help="Minuten nach der Anmeldung (Standard 2)")
     task.add_argument("--daily-at", help="zusaetzlich taeglich um HH:MM")
     task.add_argument("--retry-minutes", type=int, default=0, help="alle N Minuten (5-1440) erneut versuchen und bei jeder Netzwerkverbindung starten, solange das Ziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar); 0 = aus")
+    task.add_argument("--on-usb", action="store_true", help="zusaetzlich beim Anstecken eines Laufwerks starten (schaltet bei Administratorrechten das noetige Windows-Ereignisprotokoll ein; sonst Hinweis)")
     task.add_argument("--elevated", action="store_true", help="Aufgabe mit hoechsten Rechten (Administrator) einrichten bzw. pruefen: noetig, damit Schattenkopien (VSS) gesperrte Dateien sichern koennen")
     task.set_defaults(func=cmd_task)
 

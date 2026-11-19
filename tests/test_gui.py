@@ -1179,3 +1179,20 @@ def test_task_tab_retry_minutes_roundtrip_and_validation(app, env):
     app.btn_task_install.invoke()
     info = scheduler.status(app.task_name)
     assert info["retry_minutes"] == 0 and "--if-available" not in info["arguments"]
+
+
+def test_task_tab_device_trigger_needs_the_event_log(app, env, monkeypatch):
+    configure(app, env)
+    app.var_usb.set(True)
+    monkeypatch.setattr(scheduler, "usb_log_enabled", lambda: False)
+    app.btn_task_install.invoke()
+    assert app.dialogs.kinds("fehler") and "Administrator" in app.dialogs.kinds("fehler")[-1][2]
+    assert not scheduler.status(app.task_name)["exists"]
+    monkeypatch.setattr(scheduler, "usb_log_enabled", lambda: True)
+    app.btn_task_install.invoke()
+    info = scheduler.status(app.task_name)
+    assert info["exists"] and info["on_usb"] and "--if-available" in info["arguments"]
+    app.var_usb.set(False)
+    app.refresh_task()
+    app.wait_idle(30)
+    assert app.var_usb.get() is True and "Beim Anstecken eines Laufwerks: ja" in app.task_text.get("1.0", "end")
