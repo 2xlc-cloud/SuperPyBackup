@@ -802,3 +802,55 @@ def test_desktop_shortcut_buttons_create_and_remove(app, env):
     assert str(env.root / "config.json") in shortcut.read()[1]
     app.btn_shortcut_remove.invoke()
     assert not shortcut.exists() and str(app.btn_shortcut_remove.cget("state")) == "disabled"
+
+
+def test_backup_started_elsewhere_turns_icon_orange_and_streams_the_log(app, env):
+    """Eine per Aufgabe/Konsole gestartete Sicherung haelt den Mutex: Symbol orange, Protokoll laeuft live mit, danach Ergebnis."""
+    from superpybackup import winapi
+
+    configure(app, env)
+    with_tray(app, None)
+    app._external_mutex = "Local\\SuperPyBackupTest-" + uuid.uuid4().hex  # nie der echte Mutex
+    log_dir = Path(app._log_dir())
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{time.strftime('%Y-%m-%d')}.log"
+    log_file.write_text("2000-01-01 00:00:00.000 [INFO] User=S-1 Target=X:/t alter Eintrag\n", encoding="utf-8")
+    app.check_external()
+    assert not app._external and app._icon_state == "idle"
+    mutex = winapi.NamedMutex(app._external_mutex)
+    assert mutex.try_acquire()
+    try:
+        # der fremde Prozess ist der Mutex-Halter: die GUI selbst darf nichts davon wissen
+        with open(log_file, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write("2026-11-19 10:00:00.100 [INFO] User=S-1-5-21 Target=R:/Backup/x Start 1.7.1\n")
+        app.check_external()
+        assert app._external and app._icon_state == "busy" and app.tray.states[-1] == "busy"
+        shown = app.backup_log.get("1.0", "end")
+        assert "Start 1.7.1" in shown and "alter Eintrag" not in shown and "S-1-5-21" not in shown  # nur neue Zeilen, ohne Kennungen
+        with open(log_file, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write("2026-11-19 10:00:05.000 [INFO] User=S-1-5-21 Target=R:/Backup/x Scan: 5 Dateien\n2026-11-19 10:00:06.000 [ERROR] User=S-1-5-21 Target=R:/Backup/x Datei nicht gesichert: a\n")
+            handle.write("halbe Zeile ohne Ende")
+        app.check_external()
+        shown = app.backup_log.get("1.0", "end")
+        assert "Scan: 5 Dateien" in shown and "halbe Zeile" not in shown  # unvollstaendige Zeile wartet
+    finally:
+        mutex.close()
+    app.check_external()
+    assert not app._external and app._last_run_failed and app._icon_state == "error" and app.tray.states[-1] == "error"
+    assert "Fehler" in app.result_label.cget("text")
+
+
+def test_no_external_detection_while_the_gui_runs_its_own_backup(app, env):
+    from superpybackup import winapi
+
+    configure(app, env)
+    app._external_mutex = "Local\\SuperPyBackupTest-" + uuid.uuid4().hex
+    mutex = winapi.NamedMutex(app._external_mutex)
+    assert mutex.try_acquire()
+    try:
+        app._backup_running = True  # eigener Lauf: Mutex gehoert der GUI selbst
+        app.check_external()
+        assert not app._external
+    finally:
+        app._backup_running = False
+        mutex.close()

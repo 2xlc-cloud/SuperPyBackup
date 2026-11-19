@@ -126,7 +126,13 @@ class App(tk.Tk):
         self._set_window_icon()
         if tray:
             self._start_tray(start_in_tray)
+        self._external = False  # laeuft gerade eine Sicherung eines anderen Prozesses (z. B. per Aufgabe)?
+        self._external_offset = 0
+        self._external_log = ""
+        self._external_failed = False
+        self._external_mutex = ""
         self.after(100, self._poll)
+        self.after(1000, self._watch_external)
 
     # ------------------------------------------------------------------ Aufbau
     def _style(self) -> None:
@@ -636,6 +642,87 @@ class App(tk.Tk):
                 self.progress_label.configure(text=f"{done} von {total} Dateien: {text}")
         if not self._closing:
             self.after(100, self._poll)
+
+    def _watch_external(self) -> None:
+        try:
+            self.check_external()
+        except Exception:  # noqa: BLE001 - die Beobachtung darf die Oberflaeche nie stoeren
+            pass
+        if not self._closing:
+            self.after(1000, self._watch_external)
+
+    def check_external(self) -> None:
+        """Erkennt eine Sicherung eines anderen Prozesses (Aufgabe, Konsole): Symbol orange, Protokoll laeuft live mit."""
+        if not self._external_mutex:
+            self._external_mutex = "Local\\SuperPyBackup-" + winapi.current_user_sid()
+        mine = self._ops > 0 or self._backup_running
+        running = not mine and winapi.NamedMutex.exists(self._external_mutex)
+        if running:
+            if not self._external:
+                self._external = True
+                self._external_failed = False
+                self._external_log = os.path.join(self._log_dir(), f"{time.strftime('%Y-%m-%d')}.log")
+                self._external_offset = self._run_start_offset(self._external_log)
+                self._append(self.backup_log, "", clear=True)
+                self.result_label.configure(text="Sicherung läuft (von einer Aufgabe oder Konsole gestartet) ...", style="TLabel")
+                self.set_status("Sicherung läuft (extern gestartet) ...")
+                self._tray_status("Sicherung läuft (extern gestartet) ...")
+                self._update_icon_state()
+            self._read_external_log()
+        elif self._external:
+            self._read_external_log()
+            self._external = False
+            self._last_run_failed = self._external_failed
+            self._update_icon_state()
+            self.result_label.configure(text="Die extern gestartete Sicherung ist beendet." if not self._external_failed else "Die extern gestartete Sicherung hatte Fehler (siehe Protokoll).", style="Bad.TLabel" if self._external_failed else "Ok.TLabel")
+            self.set_status("Extern gestartete Sicherung beendet.")
+            self._tray_status(f"{time.strftime('%H:%M')} Extern gestartete Sicherung beendet.")
+            self._reload_logs_if_visible()
+        else:
+            return
+        self._update_icon_state()
+
+    @staticmethod
+    def _run_start_offset(path: str) -> int:
+        """Position der letzten Zeile "Start <Version>" (Beginn des laufenden Laufs), sonst das Dateiende."""
+        try:
+            size = os.path.getsize(path)
+            with open(path, "rb") as handle:
+                handle.seek(max(0, size - 262144))
+                base = handle.tell()
+                data = handle.read()
+        except OSError:
+            return 0
+        found = None
+        for found in re.finditer(rb"^.{23} \[INFO\] User=\S* Target=\S* Start \d", data, re.MULTILINE):
+            pass
+        return base + found.start() if found else size
+
+    def _read_external_log(self) -> None:
+        """Haengt neue Zeilen der Tagesprotokolldatei an die Anzeige an (Sicherungs-Reiter und, falls offen, Protokoll-Reiter)."""
+        try:
+            with open(self._external_log, "rb") as handle:
+                handle.seek(self._external_offset)
+                data = handle.read()
+        except OSError:
+            return
+        end = data.rfind(b"\n")
+        if end < 0:
+            return
+        self._external_offset += end + 1
+        text = data[:end + 1].decode("utf-8", errors="replace")
+        if " [ERROR] " in text:
+            self._external_failed = True
+        # wie in der Konsole: ohne SID und Zielpfad, nur Zeit, Stufe und Text
+        self._append(self.backup_log, re.sub(r" User=\S* Target=\S*", "", text))
+        self._reload_logs_if_visible()
+
+    def _reload_logs_if_visible(self) -> None:
+        try:
+            if self.notebook.select() == str(self.tab_log) and self.var_log_file.get() == os.path.basename(self._external_log):
+                self.show_log()
+        except tk.TclError:
+            pass
 
     def wait_idle(self, timeout: float = 60.0) -> None:
         """Wartet (mit laufender Ereignisschleife), bis alle Hintergrundvorgänge beendet sind. Für Tests."""
@@ -1360,7 +1447,7 @@ class App(tk.Tk):
 
     def _update_icon_state(self, running: bool | None = None) -> None:
         """Faerbt Fenster-, Taskleisten- und Infobereich-Symbol nach dem Zustand: arbeitet = orange, letzter Lauf fehlgeschlagen = rot."""
-        busy = (self._ops > 0 or self._backup_running) if running is None else running
+        busy = (self._ops > 0 or self._backup_running or self._external) if running is None else (running or self._external)
         state = appicon.BUSY if busy else appicon.ERROR if self._last_run_failed else appicon.IDLE
         if state == self._icon_state:
             return

@@ -129,6 +129,21 @@ class NamedMutex:
             self.close()
         return self.owned
 
+    @staticmethod
+    def exists(name: str) -> bool:
+        """True, wenn ein Prozess den benannten Mutex gerade offen hat (ohne ihn zu belegen, stoert also keinen Lauf)."""
+        if not IS_WINDOWS:
+            return False
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.OpenMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenMutexW(0x00100000, False, name)  # SYNCHRONIZE
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
+
     def close(self) -> None:
         if self._handle and IS_WINDOWS:
             kernel32 = ctypes.windll.kernel32
