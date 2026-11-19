@@ -13,3 +13,6 @@ credentials.json
 *.log
 bench/work/
 .venv/
+
+# Geheime Schluessel nie ins Repository
+*.key

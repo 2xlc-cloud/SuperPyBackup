@@ -134,3 +134,14 @@ def _isolate_network_shares(tmp_path, monkeypatch):
     if not os.environ.get("SUPERPYBACKUP_HOME"):
         monkeypatch.setenv("SUPERPYBACKUP_HOME", str(tmp_path / "home-isolated"))
     monkeypatch.setattr(netshare, "_connected", {})
+
+
+TEST_SEED = bytes(range(1, 33))  # Testschluessel der nachgebildeten GitHub-Releases; der echte Schluessel liegt ausserhalb des Repositorys
+
+
+@pytest.fixture(autouse=True)
+def _test_release_key(monkeypatch):
+    """Updates der Tests sind mit dem Testschluessel signiert; der eingebettete echte Schluessel wird dafuer ersetzt."""
+    from superpybackup import ed25519, updater
+
+    monkeypatch.setattr(updater, "RELEASE_PUBLIC_KEYS", (ed25519.public_key(TEST_SEED).hex(),))

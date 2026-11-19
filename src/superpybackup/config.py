@@ -84,6 +84,7 @@ DEFAULTS: dict[str, Any] = {
         "check_for_updates": True,
         "check_interval_hours": 24,
         "force_after_versions": 5,
+        "require_signature": True,
         "repository": REPOSITORY,
         "api_url": "https://api.github.com",
     },
@@ -267,6 +268,8 @@ def validate(data: dict[str, Any], *, require_target: bool = True) -> list[Sourc
         problems.append("'update.check_for_updates' muss true oder false sein.")
     _int(update["check_interval_hours"], "update.check_interval_hours", 1, 24 * 365, problems)
     _int(update["force_after_versions"], "update.force_after_versions", 0, 1000, problems)
+    if not isinstance(update["require_signature"], bool):
+        problems.append("'update.require_signature' muss true oder false sein.")
     if not isinstance(update["repository"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", update["repository"]):
         problems.append("'update.repository' muss die Form Benutzer/Repository haben.")
     if not isinstance(update["api_url"], str) or not re.fullmatch(r"https?://[A-Za-z0-9_.:-]+", update["api_url"]):

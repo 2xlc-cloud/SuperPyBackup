@@ -9,8 +9,11 @@ Sicherheitsregeln
   * Download-URLs muessen zum konfigurierten Repository gehoeren; Groesse und SHA-256 (SHA256SUMS.txt der Release) werden geprueft.
   * Ein heruntergeladenes Programm wird erst nach bestandener Pruefung ueberhaupt ausgefuehrt (nur `--version`).
   * Austausch mit Rollback: bei jedem Fehler bleibt die bisherige Installation unveraendert.
-  * Die SHA-256-Summen schuetzen vor beschaedigten/unvollstaendigen Downloads. Sie ersetzen keine Codesignatur
-    und schuetzen nicht vor einem kompromittierten Repository.
+  * Signatur: Jede Release enthaelt SHA256SUMS.txt.sig, eine Ed25519-Signatur ueber SHA256SUMS.txt. Der oeffentliche Schluessel steht
+    fest im Programm (RELEASE_PUBLIC_KEYS); der geheime Schluessel liegt nur beim Herausgeber, nie auf GitHub. Ohne gueltige
+    Signatur wird nichts installiert (update.require_signature, Standard true). So genuegt ein manipuliertes Repository oder ein
+    uebernommenes GitHub-Konto nicht, um Schadsoftware einzuspielen: die SHA-256-Summen allein koennten mit ausgetauscht werden.
+  * Die SHA-256-Summen selbst schuetzen vor beschaedigten/unvollstaendigen Downloads.
 """
 
 from __future__ import annotations
@@ -29,11 +32,17 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
-from . import __version__, config as cfgmod, fsutil
+import base64
+import binascii
+
+from . import __version__, config as cfgmod, ed25519, fsutil
 from .runlog import RunLog
 
 ASSETS = ("SuperPyBackup.exe", "SuperPyBackupCmd.exe")
 SUMS_NAME = "SHA256SUMS.txt"
+SIG_NAME = "SHA256SUMS.txt.sig"
+# Oeffentliche Schluessel (hex) der Herausgeber-Signatur; mehrere erlauben einen Schluesselwechsel (alt und neu gleichzeitig).
+RELEASE_PUBLIC_KEYS = ("252696795972f58b1a44187b3e01ebd6f6ae62157d52d04d68fa1fba062e1169",)
 MAX_JSON = 2 * 1024 * 1024
 MAX_BINARY = 200 * 1024 * 1024
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
@@ -205,6 +214,21 @@ def parse_sums(text: str) -> dict[str, str]:
     return sums
 
 
+def verify_signature(sums: bytes, signature_text: str, keys: tuple[str, ...] | None = None) -> None:
+    """Prueft die Ed25519-Signatur (Base64) ueber den exakten Inhalt von SHA256SUMS.txt; UpdateError, wenn kein Schluessel passt."""
+    try:
+        signature = base64.b64decode(signature_text.strip(), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise UpdateError("Die Signatur der Release ist nicht lesbar.") from error
+    for key in (RELEASE_PUBLIC_KEYS if keys is None else keys):
+        try:
+            if ed25519.verify(bytes.fromhex(key), sums, signature):
+                return
+        except ValueError:
+            continue
+    raise UpdateError("Die Signatur der Release ist ungueltig: die Pruefsummen stammen nicht vom Herausgeber. Es wird nichts installiert.")
+
+
 def _default_smoke_test(path: str, version: str) -> None:
     result = subprocess.run([path, "--version"], capture_output=True, timeout=60, creationflags=0x08000000)
     output = (result.stdout or b"").decode("utf-8", "replace")
@@ -228,14 +252,18 @@ def install_update(
     names = [name for name in ASSETS if os.path.isfile(os.path.join(install_dir, name))]
     if not names:
         raise UpdateError(f"Im Installationsordner wurde kein Programm gefunden: {install_dir}")
-    missing = [name for name in names + [SUMS_NAME] if name not in info.assets]
+    signed = bool(update_settings.get("require_signature", True))
+    missing = [name for name in names + [SUMS_NAME] + ([SIG_NAME] if signed else []) if name not in info.assets]
     if missing:
         raise UpdateError(f"Die Release enthaelt nicht alle benoetigten Dateien: {', '.join(missing)}")
     work = os.path.join(install_dir, f".update-{fsutil.new_id(12)}")
     os.mkdir(work)
     replaced: list[str] = []
     try:
-        sums = parse_sums(fetch(str(info.assets[SUMS_NAME]["url"]), 64 * 1024).decode("utf-8", "replace"))
+        sums_bytes = fetch(str(info.assets[SUMS_NAME]["url"]), 64 * 1024)
+        if signed:
+            verify_signature(sums_bytes, fetch(str(info.assets[SIG_NAME]["url"]), 4096).decode("ascii", "replace"))
+        sums = parse_sums(sums_bytes.decode("utf-8", "replace"))
         for name in names:
             if name not in sums:
                 raise UpdateError(f"Fuer {name} fehlt die SHA-256-Summe in {SUMS_NAME}.")

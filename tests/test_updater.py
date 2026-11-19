@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import threading
@@ -9,10 +10,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from superpybackup import __version__, updater
+from conftest import TEST_SEED
+from superpybackup import __version__, ed25519, updater
 from superpybackup.runlog import RunLog
 
 REPO = "2xlc-cloud/SuperPyBackup"
+TEST_KEY = ed25519.public_key(TEST_SEED).hex()
 
 
 class FakeGitHub:
@@ -28,6 +31,7 @@ class FakeGitHub:
         self.requests: list[str] = []
         self.drop_assets: set[str] = set()
         self.draft = False
+        self.sig_override: bytes | None = None  # statt der gueltigen Signatur ausliefern
         self.release_list: list | None = None  # Eintraege fuer /releases?per_page=100: Tag oder (Tag, draft, prerelease)
         self.prerelease = False
         outer = self
@@ -45,7 +49,7 @@ class FakeGitHub:
                         return self._send(status, body)
                     assets = {name: data for name, data in outer.files.items()}
                     sums = outer.sums_text()
-                    all_assets = {**assets, "SHA256SUMS.txt": sums.encode()}
+                    all_assets = {**assets, "SHA256SUMS.txt": sums.encode(), "SHA256SUMS.txt.sig": outer.sig_body()}
                     listing = [{"name": n, "size": outer.size_override.get(n, len(d)), "browser_download_url": f"{base}/{REPO}/releases/download/{outer.tag}/{n}"} for n, d in all_assets.items() if n not in outer.drop_assets]
                     return self._send(200, json.dumps({"tag_name": outer.tag, "draft": outer.draft, "prerelease": outer.prerelease, "html_url": f"{base}/{REPO}/releases/tag/{outer.tag}", "assets": listing}).encode())
                 if self.path.startswith(f"/repos/{REPO}/releases?") and outer.release_list is not None:
@@ -56,6 +60,8 @@ class FakeGitHub:
                     name = self.path[len(prefix):]
                     if name == "SHA256SUMS.txt":
                         return self._send(200, outer.sums_text().encode())
+                    if name == "SHA256SUMS.txt.sig" and name not in outer.drop_assets:
+                        return self._send(200, outer.sig_body())
                     if name in outer.files:
                         return self._send(200, outer.body_override.get(name, outer.files[name]))
                 self._send(404, b"nicht gefunden")
@@ -74,6 +80,11 @@ class FakeGitHub:
         sums = self.sums_override if self.sums_override is not None else {n: hashlib.sha256(d).hexdigest() for n, d in self.files.items()}
         return "".join(f"{digest}  {name}\n" for name, digest in sums.items())
 
+    def sig_body(self) -> bytes:
+        if self.sig_override is not None:
+            return self.sig_override
+        return base64.b64encode(ed25519.sign(TEST_SEED, self.sums_text().encode())) + b"\n"
+
     @property
     def settings(self) -> dict:
         return {"check_for_updates": True, "check_interval_hours": 24, "repository": REPO, "api_url": f"http://127.0.0.1:{self.port}"}
@@ -87,7 +98,8 @@ class FakeGitHub:
 
 
 @pytest.fixture
-def github():
+def github(monkeypatch):
+    monkeypatch.setattr(updater, "RELEASE_PUBLIC_KEYS", (TEST_KEY,))
     server = FakeGitHub()
     yield server
     server.close()
@@ -424,3 +436,72 @@ def test_interactive_check_only_announces_the_forced_update(env, github, install
     output = capsys.readouterr().out
     assert "6 Versionen alt" in output and "Pflichtupdate" in output
     assert (install_dir / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE alt"  # 'check' laedt und installiert nichts
+
+
+# ---- Signatur der Release (Ed25519 ueber SHA256SUMS.txt) ---------------------------------------------------------------
+def install_with(github, install_dir, **settings):
+    info = updater.check_for_update({**github.settings, **settings})
+    return updater.install_update(info, str(install_dir), {**github.settings, **settings}, confirm=lambda i: True, smoke_test=ok_smoke)
+
+
+def test_signed_release_installs(github, install_dir):
+    assert sorted(install_with(github, install_dir)) == ["SuperPyBackup.exe", "SuperPyBackupCmd.exe"]
+    assert (install_dir / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE v9.9.9"
+
+
+def test_missing_signature_blocks_the_installation(github, install_dir):
+    github.drop_assets = {"SHA256SUMS.txt.sig"}
+    before = snapshot_of(install_dir)
+    with pytest.raises(updater.UpdateError, match="SHA256SUMS.txt.sig"):
+        install_with(github, install_dir)
+    assert snapshot_of(install_dir) == before
+
+
+@pytest.mark.parametrize("sig", [
+    base64.b64encode(ed25519.sign(bytes(32), b"irgendwas anderes")) + b"\n",  # gueltige Signatur, aber ueber anderen Inhalt
+    base64.b64encode(ed25519.sign(bytes(range(32)), b"x")) + b"\n",  # anderer Schluessel
+    b"das ist kein base64 !!!",
+    b"",
+    base64.b64encode(b"zu kurz"),
+])
+def test_invalid_signature_blocks_the_installation(github, install_dir, sig):
+    github.sig_override = sig
+    before = snapshot_of(install_dir)
+    with pytest.raises(updater.UpdateError, match="Signatur"):
+        install_with(github, install_dir)
+    assert snapshot_of(install_dir) == before and github.asset_requests().count(f"/{REPO}/releases/download/v9.9.9/SuperPyBackup.exe") == 0  # nichts Ausfuehrbares geladen
+
+
+def test_forged_sums_with_valid_hashes_are_refused(github, install_dir):
+    # Angreifer tauscht EXE und Pruefsummen aus (alles passt zueinander), kann aber nicht signieren
+    github.files = {"SuperPyBackup.exe": b"SCHADCODE", "SuperPyBackupCmd.exe": b"SCHADCODE"}
+    legit = github.sig_body()
+    github.files = {"SuperPyBackup.exe": b"GUI-EXE v9.9.9", "SuperPyBackupCmd.exe": b"CMD-EXE v9.9.9"}
+    good_signature = github.sig_body()
+    assert legit != good_signature
+    github.files = {"SuperPyBackup.exe": b"SCHADCODE", "SuperPyBackupCmd.exe": b"SCHADCODE"}
+    github.sig_override = good_signature  # Signatur der echten Release zu den gefaelschten Summen
+    before = snapshot_of(install_dir)
+    with pytest.raises(updater.UpdateError, match="Signatur"):
+        install_with(github, install_dir)
+    assert snapshot_of(install_dir) == before
+
+
+def test_signature_can_be_switched_off_explicitly(github, install_dir):
+    github.sig_override = b"kaputt"
+    github.drop_assets = {"SHA256SUMS.txt.sig"}
+    assert install_with(github, install_dir, require_signature=False)  # bewusst abgeschaltet: wie frueher, nur SHA-256
+    assert (install_dir / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE v9.9.9"
+
+
+def test_key_rotation_accepts_old_or_new_key(github, install_dir, monkeypatch):
+    new = ed25519.public_key(bytes(32)).hex()
+    monkeypatch.setattr(updater, "RELEASE_PUBLIC_KEYS", (new, TEST_KEY))
+    assert install_with(github, install_dir)
+    monkeypatch.setattr(updater, "RELEASE_PUBLIC_KEYS", (new,))
+    with pytest.raises(updater.UpdateError, match="Signatur"):
+        install_with(github, install_dir)
+
+
+def test_shipped_public_key_is_a_valid_ed25519_key_and_signing_script_matches():
+    assert len(updater.RELEASE_PUBLIC_KEYS) >= 1 and all(len(bytes.fromhex(k)) == 32 for k in updater.RELEASE_PUBLIC_KEYS)

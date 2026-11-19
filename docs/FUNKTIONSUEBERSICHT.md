@@ -36,6 +36,7 @@ Grundlage ist die Analyse des PowerShell-Projekts `SuperPSBackup` (Stand 1.1.0, 
 | 27 | Warnung bei ausbleibender Sicherung: Desktop-Meldung, wenn der letzte Erfolg länger als `backup.warn_after_days` (Standard 3, 0 = aus) zurückliegt; einmal pro Tag und Sicherung; Zustand lokal im Programmordner | neu | `staleness`, `engine`, `cli`, `gui`, `config` |
 | 28 | Zielordner automatisch anlegen (eine Ebene, nur wenn der übergeordnete Ordner existiert) | neu | `engine` |
 | 29 | Wiederherstellen in der Oberfläche: Suche in allen Ständen (jede unterschiedliche Fassung einer Datei), Vorschau (Text, PNG/GIF, Eckdaten), Auswahl von Stand und Datei zum Wiederherstellen; Befehl `find` | neu | `restore`, `gui`, `cli` |
+| 30 | Signierte Updates: Ed25519-Signatur (`SHA256SUMS.txt.sig`) über die Prüfsummen, öffentlicher Schlüssel im Programm, `update.require_signature` (Standard an); reines Python (`ed25519`, RFC-8032-Testvektoren), Signierwerkzeug `build/sign_release.py` | neu | `ed25519`, `updater`, `config`, `build` |
 | 19 | Migration vom Altnamen UserProfileBackup | entfällt (neues Projekt) | – |
 
 ## 2. Gefundene Schwächen der Referenz (nicht übernommen)

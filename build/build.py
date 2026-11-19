@@ -6,6 +6,7 @@ Erzeugt in dist\\:
   SuperPyBackup.exe     konsolenlos (fuer die geplante Aufgabe, kein sichtbares Fenster)
   SuperPyBackupCmd.exe  Konsolenversion (Wiederherstellung, Konfiguration, Aufgabe, Update)
   SHA256SUMS.txt        Pruefsummen (werden auch fuer die Update-Pruefung verwendet)
+  SHA256SUMS.txt.sig    Ed25519-Signatur der Pruefsummen (build\\sign_release.py); ohne sie installieren Programme ab 1.13.0 kein Update
 
 Voraussetzungen: Python 3.13 und die in requirements-build.txt festgelegte PyInstaller-Version.
 Die Quellen liegen unveraendert in src\\; Build-Zwischenstaende landen in build\\work (nicht versioniert).
@@ -60,6 +61,15 @@ def main() -> int:
         lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
     (DIST / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="ascii")
     shutil.rmtree(WORK, ignore_errors=True)
+    (DIST / "SHA256SUMS.txt.sig").unlink(missing_ok=True)
+    try:
+        sys.path.insert(0, str(ROOT / "build"))
+        import sign_release
+
+        sign_release.sign_file(DIST / "SHA256SUMS.txt")
+        print("Signiert: SHA256SUMS.txt.sig")
+    except SystemExit as error:
+        print(f"\nWARNUNG: NICHT SIGNIERT - {error}\nOhne SHA256SUMS.txt.sig akzeptiert der Updater (ab 1.13.0) diese Release nicht.", file=sys.stderr)
     print(f"\nFertig (Version {version()}):")
     for name, _ in TARGETS:
         path = DIST / f"{name}.exe"

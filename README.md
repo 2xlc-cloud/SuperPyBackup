@@ -119,7 +119,7 @@ Globale Option: `--config PFAD` (Standard `%LOCALAPPDATA%\SuperPyBackup\config.j
     "warn_after_days": 3                    // Desktop-Meldung, wenn so viele Tage keine erfolgreiche Sicherung lief; 0 = aus
   },
   "logging": { "directory": "", "keep_days": 30, "max_file_mb": 20 },   // leer = %LOCALAPPDATA%\SuperPyBackup\Logs
-  "update": { "check_for_updates": true, "check_interval_hours": 24, "force_after_versions": 5, "repository": "2xlc-cloud/SuperPyBackup", "api_url": "https://api.github.com" },
+  "update": { "check_for_updates": true, "check_interval_hours": 24, "force_after_versions": 5, "require_signature": true, "repository": "2xlc-cloud/SuperPyBackup", "api_url": "https://api.github.com" },
   "notifications": { "enabled": false, "on_success": true, "on_update": true, "on_error": true },   // Desktop-Meldungen (Standard: aus); die drei weiteren Schalter wählen die Ereignisse
   "gui": { "theme": "dark", "close_to_tray": true }   // Design "dark" (Standard) oder "light"; close_to_tray: Schließen blendet nur aus (Infobereich)
 }
@@ -176,6 +176,8 @@ Laufzeit, gescannte/neue/geänderte/unveränderte/ausgelassene/fehlerhafte Datei
 Aufbewahrungsbereinigung, Warnungen/Fehler und den Status. Fehler vor dem Start (z. B. ungültige Konfiguration) landen auch ohne Konsole in `errors.log`, unerwartete Abstürze in `crash.log`.
 
 ## Updates
+
+**Signierte Veröffentlichungen:** Jede Release enthält neben `SHA256SUMS.txt` die Datei `SHA256SUMS.txt.sig`, eine Ed25519-Signatur über die Prüfsummen. Der öffentliche Schlüssel steckt fest im Programm (`updater.RELEASE_PUBLIC_KEYS`), der geheime liegt nur beim Herausgeber (`%USERPROFILE%\.superpybackup\release-signing.key`, nie im Repository). Ein Update wird nur installiert, wenn die Signatur zu den Prüfsummen passt (`update.require_signature`, Standard `true`) – so reicht ein manipuliertes Repository oder ein übernommenes GitHub-Konto nicht, um Schadsoftware einzuspielen, selbst wenn Programmdateien und Prüfsummen zusammen ausgetauscht werden. Das gilt für normale Updates und das Pflichtupdate gleichermaßen; ohne gültige Signatur bleibt die Installation unverändert. Versionen vor 1.13.0 prüfen noch keine Signatur. Veröffentlichen: `python build\sign_release.py keygen` (einmalig), danach signiert `python build\build.py` automatisch; den Schlüssel unbedingt sichern.
 
 **Pflichtupdate:** Ist die installierte Version mehr als `update.force_after_versions` (Standard **5**) veröffentlichte Versionen hinter der neuesten, installieren die **automatischen** Prüfungen das Update **ohne Rückfrage**: nach einer Sicherung, bei der geplanten Updateprüfung (`update check --quiet`) und in der Oberfläche (beim Start, danach alle 6 Stunden, und bei „Nach Updates suchen“). Gezählt werden die Versionen auf GitHub, die neuer sind als die installierte (Entwürfe und Vorabversionen zählen nicht); bei genau 5 ist es noch kein Pflichtupdate, bei 6 schon. Es gelten alle Sicherungen der normalen Installation (nur dieses Repository, Größe, SHA-256, Probelauf, Rollback, Vorversion als `.old`); schlägt es fehl, bleibt die Installation unverändert, wird protokolliert (und bei eingeschalteten Meldungen gemeldet) und beim nächsten Prüfabstand erneut versucht. Eine Sicherung wird nie dadurch aufgehalten: Das Update kommt erst danach. Eine laufende Oberfläche muss danach neu gestartet werden. Aus: `"force_after_versions": 0` oder `"check_for_updates": false`; beim Start aus dem Quellcode wird nur protokolliert. Der Befehl `update check` zeigt nur an, dass ein Pflichtupdate fällig ist.
 
