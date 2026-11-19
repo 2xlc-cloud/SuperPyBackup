@@ -56,7 +56,7 @@ def program_command(config_path: str | None, command_line: str = "backup --quiet
 DESCRIPTION = "SuperPyBackup: versionierte Sicherung der persoenlichen Benutzerordner."
 
 
-def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None, description: str = DESCRIPTION) -> str:
+def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None, description: str = DESCRIPTION, elevated: bool = False) -> str:
     if not 0 <= delay_minutes <= 60:
         raise SchedulerError("Die Verzoegerung muss zwischen 0 und 60 Minuten liegen.")
     daily = ""
@@ -71,7 +71,7 @@ def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2,
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>{escape(description)}</Description></RegistrationInfo>
   <Triggers><LogonTrigger><Enabled>true</Enabled><Delay>PT{delay_minutes}M</Delay><UserId>{escape(sid)}</UserId></LogonTrigger>{daily}</Triggers>
-  <Principals><Principal id="User"><UserId>{escape(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Principals><Principal id="User"><UserId>{escape(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>{'HighestAvailable' if elevated else 'LeastPrivilege'}</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
@@ -98,10 +98,10 @@ def _decode(data: bytes) -> str:
     return data.decode("latin-1")
 
 
-def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None, description: str = DESCRIPTION) -> str:
+def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None, description: str = DESCRIPTION, elevated: bool = False) -> str:
     """Legt die Aufgabe an oder aktualisiert sie (idempotent). Aufgaben anderer Namen bleiben unberuehrt."""
     validate_name(name)
-    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at, description=description)
+    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at, description=description, elevated=elevated)
     with tempfile.TemporaryDirectory(prefix="superpybackup-task-") as folder:
         path = os.path.join(folder, "task.xml")
         with open(path, "wb") as handle:
@@ -146,7 +146,7 @@ def status(name: str) -> dict[str, object]:
     }
 
 
-def check(name: str) -> list[str]:
+def check(name: str, allow_elevated: bool = False) -> list[str]:
     """Prueft die Aufgabe gegen die Sollwerte; liefert Abweichungen (leer = in Ordnung)."""
     info = status(name)
     if not info["exists"]:
@@ -154,8 +154,8 @@ def check(name: str) -> list[str]:
     problems = []
     if not info["enabled"]:
         problems.append("Aufgabe ist deaktiviert.")
-    if info["run_level"] != "LeastPrivilege":
-        problems.append("Aufgabe laeuft mit erhoehten Rechten.")
+    if info["run_level"] != "LeastPrivilege" and not allow_elevated:
+        problems.append("Aufgabe laeuft mit erhoehten Rechten (gewollt nur fuer Schattenkopien: task check --elevated).")
     if not info["hidden"]:
         problems.append("Aufgabe ist nicht versteckt.")
     if info["multiple_instances"] != "IgnoreNew":

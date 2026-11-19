@@ -77,6 +77,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Windows-Aufgabe", [
         ("Aufgabe einrichten", "Legt die versteckte Aufgabe an: Start 2 Minuten nach der Anmeldung, ohne Administratorrechte.", "task install"),
+        ("Aufgabe mit hoechsten Rechten (VSS)", "Nur aus einer als Administrator gestarteten Eingabeaufforderung möglich. Eine Aufgabe mit höchsten Rechten kann über eine Schattenkopie (VSS) auch gesperrte Dateien sichern, z. B. Outlook-PSTs. Einstellung: backup.use_vss (off, auto, on).", "task install --elevated"),
         ("Andere Wartezeit", "Wartezeit in Minuten nach der Anmeldung.", "task install --delay 5"),
         ("Zusätzlich täglich", "Startet die Sicherung zusätzlich jeden Tag zur angegebenen Uhrzeit (HH:MM).", "task install --daily-at 20:00"),
         ("Aufgabe ändern", "Aktualisiert eine vorhandene Aufgabe mit neuen Werten.", "task set --delay 3 --daily-at 12:30"),

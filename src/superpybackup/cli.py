@@ -12,7 +12,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, credstore, engine, fsutil, jobs as jobsmod, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, staleness, updater
+from . import __version__, cleanup as cleanupmod, config as cfgmod, credstore, engine, fsutil, jobs as jobsmod, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, staleness, updater, vss
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -300,14 +300,18 @@ def cmd_task(args: argparse.Namespace) -> int:
         else:
             config = _load_config(args)  # nur installieren, wenn die Konfiguration gueltig ist
             program, arguments = scheduler.program_command(str(config.path) if config.path else None)
-        scheduler.install(name, program, arguments, delay_minutes=args.delay, daily_at=args.daily_at)
-        print(f"Aufgabe eingerichtet: {name}" + (" (alle Sicherungen nacheinander)" if run_all else "") + f"\n  Programm: {program} {arguments}\n  Start: {args.delay} Minute(n) nach Anmeldung" + (f" und taeglich {args.daily_at}" if args.daily_at else ""))
+        elevated = bool(getattr(args, "elevated", False))
+        if elevated and not vss.is_admin():
+            print("Eine Aufgabe mit hoechsten Rechten (fuer Schattenkopien/VSS) kann nur aus einer als Administrator gestarteten Eingabeaufforderung eingerichtet werden.", file=sys.stderr)
+            return 1
+        scheduler.install(name, program, arguments, delay_minutes=args.delay, daily_at=args.daily_at, elevated=elevated)
+        print(f"Aufgabe eingerichtet: {name}" + (" (alle Sicherungen nacheinander)" if run_all else "") + f"\n  Programm: {program} {arguments}\n  Start: {args.delay} Minute(n) nach Anmeldung" + (f" und taeglich {args.daily_at}" if args.daily_at else "") + ("\n  Rechte: hoechste verfuegbare (Schattenkopien fuer gesperrte Dateien moeglich)" if elevated else ""))
         return 0
     if args.action == "status":
         print(json.dumps(scheduler.status(name), indent=2, ensure_ascii=False))
         return 0
     if args.action == "check":
-        problems = scheduler.check(name)
+        problems = scheduler.check(name, allow_elevated=bool(getattr(args, "elevated", False)))
         print("Aufgabe in Ordnung." if not problems else "\n".join(problems))
         return 1 if problems else 0
     removed = scheduler.uninstall(name)
@@ -582,6 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--all", action="store_true", help="Aufgabe fuer alle Sicherungen (fuehrt 'backup --all' aus) statt fuer die gewaehlte Sicherung")
     task.add_argument("--delay", type=int, default=2, help="Minuten nach der Anmeldung (Standard 2)")
     task.add_argument("--daily-at", help="zusaetzlich taeglich um HH:MM")
+    task.add_argument("--elevated", action="store_true", help="Aufgabe mit hoechsten Rechten (Administrator) einrichten bzw. pruefen: noetig, damit Schattenkopien (VSS) gesperrte Dateien sichern koennen")
     task.set_defaults(func=cmd_task)
 
     job = sub.add_parser("job", help="Mehrere Sicherungen verwalten (anzeigen, anlegen, entfernen)")

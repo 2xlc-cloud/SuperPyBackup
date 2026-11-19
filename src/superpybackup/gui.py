@@ -423,6 +423,8 @@ class App(tk.Tk):
         ttk.Label(full_row, text="Vollsicherung automatisch alle").pack(side="left")
         ttk.Spinbox(full_row, from_=0, to=3650, width=6, textvariable=self.var_full_days).pack(side="left", padx=6)
         ttk.Label(full_row, text="Tage (0 = nur Inkremente; dazwischen wird nur Geändertes kopiert)").pack(side="left")
+        self.var_vss = tk.BooleanVar(value=True)
+        ttk.Checkbutton(box, text="Gesperrte Dateien über eine Schattenkopie (VSS) sichern – nur mit Administratorrechten (Aufgabe: task install --elevated)", variable=self.var_vss).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
         # Protokoll + Update
         box = ttk.LabelFrame(body, text="Protokoll und Updates", padding=10)
         box.grid(row=5, column=0, sticky="ew", **pad)
@@ -1100,6 +1102,7 @@ class App(tk.Tk):
         self.var_existing.set(EXISTING_LABELS[data["backup"]["existing_daily"]])
         self.var_change.set(CHANGE_LABELS[data["backup"]["change_detection"]])
         self.var_hardlinks.set(data["backup"]["use_hardlinks"])
+        self.var_vss.set(data["backup"].get("use_vss", "auto") != "off")
         self.var_full_days.set(str(data["backup"]["full_every_days"]))
         self.var_log_dir.set(data["logging"]["directory"])
         self.var_log_days.set(str(data["logging"]["keep_days"]))
@@ -1134,6 +1137,7 @@ class App(tk.Tk):
         data["backup"]["existing_daily"] = next(key for key, label in EXISTING_LABELS.items() if label == self.var_existing.get())
         data["backup"]["change_detection"] = next(key for key, label in CHANGE_LABELS.items() if label == self.var_change.get())
         data["backup"]["use_hardlinks"] = self.var_hardlinks.get()
+        data["backup"]["use_vss"] = "off" if not self.var_vss.get() else ("on" if data["backup"].get("use_vss") == "on" else "auto")  # "on" (Pflicht) bleibt erhalten
         data["backup"]["full_every_days"] = number(self.var_full_days, "Vollsicherung alle (Tage)")
         data["logging"]["directory"] = self.var_log_dir.get().strip()
         data["logging"]["keep_days"] = number(self.var_log_days, "Protokolle behalten (Tage)")

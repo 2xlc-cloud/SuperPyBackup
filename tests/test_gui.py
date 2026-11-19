@@ -132,8 +132,19 @@ def test_settings_roundtrip_and_backup_file(app, env):
     app.var_existing.set(gui.EXISTING_LABELS["new_snapshot"])
     app.var_change.set(gui.CHANGE_LABELS["hash"])
     app.var_hardlinks.set(False)
+    app.var_vss.set(False)
     app.var_log_days.set("10")
     app.var_check_updates.set(False)
+    assert app.save_settings() is True
+    saved = json.loads((env.root / "config.json").read_text(encoding="utf-8"))
+    assert saved["backup"]["use_vss"] == "off"
+    app.var_vss.set(True)
+    assert app.save_settings() is True and json.loads((env.root / "config.json").read_text(encoding="utf-8"))["backup"]["use_vss"] == "auto"
+    app.config_data["backup"]["use_vss"] = "on"  # "Pflicht" aus der Konfigurationsdatei bleibt beim Speichern erhalten
+    assert app.save_settings() is True and json.loads((env.root / "config.json").read_text(encoding="utf-8"))["backup"]["use_vss"] == "on"
+    app.var_vss.set(False)
+    assert app.save_settings() is True and json.loads((env.root / "config.json").read_text(encoding="utf-8"))["backup"]["use_vss"] == "off"
+    app.var_vss.set(False)
     assert app.save_settings() is True
     saved = json.loads((env.root / "config.json").read_text(encoding="utf-8"))
     assert saved["backup_root"] == str(env.dst) and saved["use_known_folders"] is False

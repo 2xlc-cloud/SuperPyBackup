@@ -37,6 +37,7 @@ Grundlage ist die Analyse des PowerShell-Projekts `SuperPSBackup` (Stand 1.1.0, 
 | 28 | Zielordner automatisch anlegen (eine Ebene, nur wenn der übergeordnete Ordner existiert) | neu | `engine` |
 | 29 | Wiederherstellen in der Oberfläche: Suche in allen Ständen (jede unterschiedliche Fassung einer Datei), Vorschau (Text, PNG/GIF, Eckdaten), Auswahl von Stand und Datei zum Wiederherstellen; Befehl `find` | neu | `restore`, `gui`, `cli` |
 | 30 | Signierte Updates: Ed25519-Signatur (`SHA256SUMS.txt.sig`) über die Prüfsummen, öffentlicher Schlüssel im Programm, `update.require_signature` (Standard an); reines Python (`ed25519`, RFC-8032-Testvektoren), Signierwerkzeug `build/sign_release.py` | neu | `ed25519`, `updater`, `config`, `build` |
+| 31 | Gesperrte Dateien sichern über Schattenkopie (VSS): `backup.use_vss` off/auto/on, Pfadumsetzung nur beim Lesen (Manifest mit Originalpfaden), Aufräumen auch nach hartem Abbruch, `task install --elevated`; Einstellungs-Kontrollkästchen | neu | `vss`, `engine`, `scheduler`, `cli`, `gui`, `config` |
 | 19 | Migration vom Altnamen UserProfileBackup | entfällt (neues Projekt) | – |
 
 ## 2. Gefundene Schwächen der Referenz (nicht übernommen)

@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
-from . import netshare, __version__, config as cfgmod, fsutil, manifest as mf, retention, snapshots, staleness, winapi
+from . import netshare, __version__, config as cfgmod, fsutil, manifest as mf, retention, snapshots, staleness, vss, winapi
 from .identity import Identity, get_identity
 from .runlog import RunLog
 
@@ -121,8 +121,12 @@ def build_excluder(patterns: list[str]):
     return excluded
 
 
-def scan_sources(sources: list[cfgmod.Source], excluded, log: RunLog, stats: Stats, cancel=None) -> tuple[list[FileInfo], list[str], list[dict[str, str]], list[dict[str, str]]]:
-    """Liest nur Metadaten. Verknuepfungen, Online-only-Platzhalter, System-/Temp-Dateien werden ausgelassen."""
+def scan_sources(sources: list[cfgmod.Source], excluded, log: RunLog, stats: Stats, cancel=None, translate=None) -> tuple[list[FileInfo], list[str], list[dict[str, str]], list[dict[str, str]]]:
+    """Liest nur Metadaten. Verknuepfungen, Online-only-Platzhalter, System-/Temp-Dateien werden ausgelassen.
+
+    translate: ersetzt einen Originalpfad durch den Pfad in der Schattenkopie (VSS); Kategorien und Manifest behalten die Originalpfade.
+    """
+    translate = translate or (lambda path: path)
     files: list[FileInfo] = []
     directories: list[str] = []
     categories: list[dict[str, str]] = []
@@ -131,8 +135,8 @@ def scan_sources(sources: list[cfgmod.Source], excluded, log: RunLog, stats: Sta
     for source, root in roots:
         categories.append({"name": source.name, "source": root})
         # Ist eine andere Quelle in dieser enthalten (z. B. Bilder in Dokumenten), wird sie hier nicht doppelt gesichert.
-        nested = {fsutil.norm_key(other) for _, other in roots if other != root and fsutil.norm_key(other).startswith(fsutil.norm_key(root) + os.sep)}
-        stack: list[tuple[str, str]] = [(root, "")]
+        nested = {fsutil.norm_key(translate(other)) for _, other in roots if other != root and fsutil.norm_key(other).startswith(fsutil.norm_key(root) + os.sep)}
+        stack: list[tuple[str, str]] = [(translate(root), "")]
         while stack:
             _check_cancel(cancel)
             folder, relative_dir = stack.pop()
@@ -335,6 +339,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
     mutex = winapi.NamedMutex("Local\\SuperPyBackup-" + identity.sid)
     lock: TargetLock | None = None
     stage: str | None = None
+    shadows: vss.ShadowSet | None = None
     try:
         log.info(f"Start {__version__} Benutzer={identity.name} Datum={as_of:%Y-%m-%d %H:%M:%S}")
         removed_logs = log.prune(config.log_keep_days, as_of.date())
@@ -426,7 +431,11 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
         excluded = build_excluder(config.excludes)
         if progress:
             progress('scan', 0, 0, 'Quellen werden durchsucht ...')
-        files, directories, categories, scan_errors = scan_sources(sources, excluded, log, stats, cancel)
+        try:
+            shadows = vss.open_for(config.backup["use_vss"], [source.path for source in sources], log)
+        except vss.ShadowError as error:
+            raise BackupError(str(error)) from error
+        files, directories, categories, scan_errors = scan_sources(sources, excluded, log, stats, cancel, shadows.translate if shadows else None)
         errors = list(scan_errors)
         detection = config.backup["change_detection"]
         use_links = config.backup["use_hardlinks"] and winapi.volume_supports_hardlinks(target)
@@ -564,6 +573,8 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
                 fsutil.remove_tree_safe(stage)
             except OSError as error:
                 log.warn(f"Unvollstaendigen Arbeitsordner manuell pruefen: {stage}: {error}")
+        if shadows is not None:
+            shadows.close()
         if lock is not None:
             lock.release()
         mutex.close()
