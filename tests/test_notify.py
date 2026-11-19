@@ -51,7 +51,8 @@ def test_backup_message_per_status():
     assert notify.backup_message(engine.RunResult(status=engine.PARTIAL, stats=stats))[0] == notify.ERROR
     failed = notify.backup_message(engine.RunResult(status=engine.FAILED, message="Ziel fehlt"))
     assert failed[0] == notify.ERROR and "Ziel fehlt" in failed[2]
-    assert notify.backup_message(engine.RunResult(status=engine.ALREADY)) is None
+    already = notify.backup_message(engine.RunResult(status=engine.ALREADY), "", "Eigenes")
+    assert already[0] == notify.SUCCESS and already[1] == "Heute bereits gesichert (Eigenes)"
     assert notify.backup_message(engine.RunResult(status=engine.BUSY)) is None
 
 
@@ -65,14 +66,27 @@ def test_scheduled_style_backup_notifies_success(env, tmp_path):
     assert len(messages) == 1 and messages[0]["title"] == "Sicherung abgeschlossen" and "Vollsicherung" in messages[0]["message"]
 
 
-def test_nothing_shown_when_disabled_or_nothing_to_report(env, tmp_path):
+def test_nothing_shown_when_disabled(env, tmp_path):
     write_tree(env.src, {"a.txt": "x"})
     sink = tmp_path / "out.jsonl"
     env.write_config_file()  # Standard: aus
     assert run_cli(env, str(sink), "backup", "--quiet").returncode == 0
-    env.write_config_file(notifications={"enabled": True})
-    assert run_cli(env, str(sink), "backup", "--quiet").returncode == 0  # heute schon gesichert: nichts zu melden
+    assert run_cli(env, str(sink), "backup", "--quiet").returncode == 0  # auch "heute schon gesichert" bleibt still
     assert not sink.exists()
+
+
+def test_already_backed_up_today_is_reported_when_success_notifications_are_on(env, tmp_path):
+    write_tree(env.src, {"a.txt": "x"})
+    sink = tmp_path / "out.jsonl"
+    env.write_config_file()
+    assert run_cli(env, str(sink), "backup", "--quiet").returncode == 0
+    env.write_config_file(notifications={"enabled": True})
+    assert run_cli(env, str(sink), "backup", "--quiet").returncode == 0
+    messages = [json.loads(line) for line in sink.read_text(encoding="utf-8").splitlines()]
+    assert [m["title"] for m in messages] == ["Heute bereits gesichert"]
+    env.write_config_file(notifications={"enabled": True, "on_success": False})
+    sink.unlink()
+    assert run_cli(env, str(sink), "backup", "--quiet").returncode == 0 and not sink.exists()  # "Bei Erfolg" aus: still
 
 
 def test_error_is_reported_even_without_success_notifications(env, tmp_path):

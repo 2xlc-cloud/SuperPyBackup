@@ -113,7 +113,7 @@ def notify_from_file(config_path: str | None, event: str, title: str, message: s
 
 
 def backup_message(result, kind_label: str = "", job: str = "") -> tuple[str, str, str] | None:
-    """(Ereignis, Titel, Text) fuer ein Sicherungsergebnis; None, wenn nichts zu melden ist (bereits gesichert, anderer Lauf aktiv)."""
+    """(Ereignis, Titel, Text) fuer ein Sicherungsergebnis; None, wenn nichts zu melden ist (anderer Lauf aktiv)."""
     from . import engine
 
     stats = result.stats
@@ -125,5 +125,7 @@ def backup_message(result, kind_label: str = "", job: str = "") -> tuple[str, st
         return ERROR, "Sicherung nur teilweise erfolgreich" + who, f"{stats.errors} Datei(en) konnten nicht gesichert werden. Details im Protokoll."
     if result.status == engine.FAILED:
         return ERROR, "Sicherung fehlgeschlagen" + who, result.message or "Unbekannter Fehler. Details im Protokoll."
+    if result.status == engine.ALREADY:
+        return SUCCESS, "Heute bereits gesichert" + who, "Es war kein neuer Stand nötig."
     return None
 
