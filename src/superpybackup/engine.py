@@ -12,11 +12,13 @@ Bereits freigegebene Staende werden von einem neuen Lauf nie veraendert.
 
 from __future__ import annotations
 
+import collections
 import errno
 import fnmatch
 import msvcrt
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
@@ -29,13 +31,18 @@ PARTIAL = "Partial"
 ALREADY = "AlreadyComplete"
 BUSY = "Busy"
 FAILED = "Failed"
+WAITING = "TargetUnavailable"  # Ziel nicht erreichbar, Lauf mit if_available: kein Fehler, die Aufgabe versucht es spaeter erneut
 FULL = "Full"  # eigenstaendiger Stand: alle Dateien neu kopiert, keine Hardlinks zum Vorgaenger
 INCREMENTAL = "Incremental"  # nur Geaendertes wird kopiert, Unveraendertes per Hardlink uebernommen
-EXIT_CODES = {COMPLETE: 0, ALREADY: 0, BUSY: 0, PARTIAL: 2, FAILED: 1}
+EXIT_CODES = {COMPLETE: 0, ALREADY: 0, BUSY: 0, WAITING: 0, PARTIAL: 2, FAILED: 1}
 
 
 class BackupError(Exception):
     """Fehler, der den gesamten Lauf beendet (nicht nur eine Datei)."""
+
+
+class TargetUnavailable(BackupError):
+    """Das Sicherungsziel ist gerade nicht erreichbar (Laufwerk nicht angeschlossen, Freigabe/Netzwerk nicht da)."""
 
 
 @dataclass
@@ -111,17 +118,21 @@ class TargetLock:
 
 
 def build_excluder(patterns: list[str]):
+    """Muster auf Namen oder relativen Pfad (ohne Gross-/Kleinschreibung, * ? [ ]). Ein abschliessendes / (node_modules/) gilt nur fuer Ordner."""
     compiled = [pattern.replace("\\", "/").lower() for pattern in patterns]
+    for_any = [pattern for pattern in compiled if not pattern.endswith("/")]
+    for_dirs = [pattern.rstrip("/") for pattern in compiled if pattern.endswith("/") and pattern.rstrip("/")]
 
-    def excluded(name: str, relative: str) -> bool:
+    def excluded(name: str, relative: str, is_dir: bool = False) -> bool:
         lowered_name = name.lower()
         lowered_rel = relative.lower()
-        return any(fnmatch.fnmatchcase(lowered_name, pattern) or fnmatch.fnmatchcase(lowered_rel, pattern) for pattern in compiled)
+        candidates = for_any + for_dirs if is_dir else for_any
+        return any(fnmatch.fnmatchcase(lowered_name, pattern) or fnmatch.fnmatchcase(lowered_rel, pattern) for pattern in candidates)
 
     return excluded
 
 
-def scan_sources(sources: list[cfgmod.Source], excluded, log: RunLog, stats: Stats, cancel=None, translate=None) -> tuple[list[FileInfo], list[str], list[dict[str, str]], list[dict[str, str]]]:
+def scan_sources(sources: list[cfgmod.Source], excluded, log: RunLog, stats: Stats, cancel=None, translate=None, max_bytes: int = 0) -> tuple[list[FileInfo], list[str], list[dict[str, str]], list[dict[str, str]]]:
     """Liest nur Metadaten. Verknuepfungen, Online-only-Platzhalter, System-/Temp-Dateien werden ausgelassen.
 
     translate: ersetzt einen Originalpfad durch den Pfad in der Schattenkopie (VSS); Kategorien und Manifest behalten die Originalpfade.
@@ -169,8 +180,12 @@ def scan_sources(sources: list[cfgmod.Source], excluded, log: RunLog, stats: Sta
                 if attrs & (winapi.ATTR_SYSTEM | winapi.ATTR_TEMPORARY):
                     stats.skipped += 1
                     continue
-                if excluded(name, relative):
+                if excluded(name, relative, is_dir):
                     stats.skipped += 1
+                    continue
+                if max_bytes and not is_dir and info.st_size > max_bytes:
+                    stats.skipped += 1
+                    log.info(f"Datei groesser als die Grenze ({max_bytes // (1024 * 1024)} MB) ausgelassen: {full} ({info.st_size // (1024 * 1024)} MB)")
                     continue
                 if attrs & winapi.ATTR_ONLINE_ONLY:
                     stats.skipped += 1
@@ -323,7 +338,55 @@ def _test_delay() -> float:
         return 0.0
 
 
-def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snapshot: bool | None = None, mode: str | None = None, identity: Identity | None = None, echo=None, progress=None, cancel=None) -> RunResult:
+@dataclass
+class _Outcome:
+    """Ergebnis fuer eine Datei (wird in einem Arbeitsthread ermittelt, im Hauptthread ausgewertet)."""
+
+    action: str = ""  # "linked" | "copied"
+    entry: mf.FileEntry | None = None
+    size: int = 0
+    was_unchanged: bool = False
+    link_error: str = ""  # Hardlink fehlgeschlagen, deshalb kopiert
+    error: OSError | None = None
+
+
+def _process_file(info: FileInfo, old: mf.FileEntry | None, unchanged: bool, *, stage: str, base_path: str, use_links: bool, detection: str, delay: float) -> _Outcome:
+    """Legt eine Datei im neuen Stand an: unveraenderte per Hardlink auf den Vorgaenger, sonst kopiert (ein Mal gelesen, mit SHA-256)."""
+    outcome = _Outcome()
+    destination = fsutil.safe_join(stage, info.key)
+    try:
+        if delay:
+            time.sleep(delay)
+        if unchanged and use_links and old is not None and not (detection == "hash" and fsutil.hash_file(info.path) != old.sha256):
+            previous_file = fsutil.safe_join(base_path, info.key)
+            try:
+                os.link(fsutil.fs(previous_file), fsutil.fs(destination))
+                outcome.action, outcome.size = "linked", info.size
+                outcome.entry = mf.FileEntry(info.key, info.size, info.mtime_ns, old.sha256, info.attrs)
+                return outcome
+            except OSError as error:
+                if os.path.lexists(fsutil.fs(destination)):
+                    os.remove(fsutil.fs(destination))
+                outcome.link_error = str(error)
+        size, digest, mtime_ns = fsutil.copy_file_hashed(info.path, destination)
+        fsutil.set_mtime(destination, mtime_ns)
+        fsutil.make_readonly(destination)
+        outcome.action, outcome.size = "copied", size
+        outcome.was_unchanged = old is not None and old.sha256 == digest
+        outcome.entry = mf.FileEntry(info.key, size, mtime_ns, digest, info.attrs)
+    except OSError as error:
+        if os.path.lexists(fsutil.fs(destination)):
+            try:
+                fsutil.make_writable(destination)
+                os.remove(fsutil.fs(destination))
+            except OSError:
+                pass
+        outcome.error = error
+        outcome.entry = None
+    return outcome
+
+
+def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snapshot: bool | None = None, mode: str | None = None, identity: Identity | None = None, echo=None, progress=None, cancel=None, if_available: bool = False) -> RunResult:
     """Fuehrt einen Sicherungslauf aus. Wirft nie fuer erwartbare Fehler, sondern liefert Status Failed.
 
     mode: FULL oder INCREMENTAL erzwingt die Art des Stands, None entscheidet nach `backup.full_every_days`.
@@ -357,11 +420,11 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             raise BackupError("Sicherungsziel ist nicht als absoluter Pfad konfiguriert.")
         connection_error = netshare.ensure_connected(root, log)
         if connection_error:
-            raise BackupError(connection_error)
+            raise (TargetUnavailable if getattr(connection_error, "unreachable", False) else BackupError)(connection_error)
         if not os.path.isdir(fsutil.fs(root)):
             _create_target_folder(root, log)
         if not os.path.isdir(fsutil.fs(root)):
-            raise BackupError(f"Sicherungsziel nicht vorhanden oder nicht erreichbar: {root}")
+            raise TargetUnavailable(f"Sicherungsziel nicht vorhanden oder nicht erreichbar: {root}")
         fsutil.assert_plain_directory(root)
         sources, notes = cfgmod.resolve_sources(config)
         for note in notes:
@@ -435,7 +498,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             shadows = vss.open_for(config.backup["use_vss"], [source.path for source in sources], log)
         except vss.ShadowError as error:
             raise BackupError(str(error)) from error
-        files, directories, categories, scan_errors = scan_sources(sources, excluded, log, stats, cancel, shadows.translate if shadows else None)
+        files, directories, categories, scan_errors = scan_sources(sources, excluded, log, stats, cancel, shadows.translate if shadows else None, int(config.backup["max_file_size_mb"]) * 1024 * 1024)
         errors = list(scan_errors)
         detection = config.backup["change_detection"]
         use_links = config.backup["use_hardlinks"] and winapi.volume_supports_hardlinks(target)
@@ -464,61 +527,76 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             os.makedirs(fsutil.fs(fsutil.safe_join(stage, directory)), exist_ok=True)
         entries: list[mf.FileEntry] = []
         delay = _test_delay()
+        threads = 1 if delay else int(config.backup["threads"])  # mit kuenstlicher Verzoegerung (Tests) bleibt der Ablauf der Reihe nach
         link_failed_reported = False
-        for position, (info, old, unchanged) in enumerate(plan, 1):
-            _check_cancel(cancel)
-            if progress:
-                progress('copy', position, len(plan), info.key)
-            destination = fsutil.safe_join(stage, info.key)
-            try:
-                if delay:
-                    time.sleep(delay)
-                if unchanged and use_links and old is not None:
-                    if detection == "hash" and fsutil.hash_file(info.path) != old.sha256:
-                        unchanged = False
-                    else:
-                        previous_file = fsutil.safe_join(base.path, info.key)
-                        try:
-                            os.link(fsutil.fs(previous_file), fsutil.fs(destination))
-                            stats.unchanged += 1
-                            stats.linked += 1
-                            entries.append(mf.FileEntry(info.key, info.size, info.mtime_ns, old.sha256, info.attrs))
-                            stats.total_bytes += info.size
-                            log.file("unveraendert (Hardlink)", info.key)
-                            continue
-                        except OSError as error:
-                            if os.path.lexists(fsutil.fs(destination)):
-                                os.remove(fsutil.fs(destination))
-                            if not link_failed_reported:
-                                log.warn(f"Hardlink nicht moeglich ({error}); es wird kopiert.")
-                                link_failed_reported = True
-                size, digest, mtime_ns = fsutil.copy_file_hashed(info.path, destination)
-                fsutil.set_mtime(destination, mtime_ns)
-                fsutil.make_readonly(destination)
-                was_unchanged = old is not None and old.sha256 == digest
-                log.file("neu" if old is None else "unveraendert (kopiert)" if was_unchanged else "geaendert", f"{info.key} ({size} Bytes)")
+        base_path = base.path if base else ""
+
+        def handle(info: FileInfo, old: mf.FileEntry | None, outcome: _Outcome) -> None:
+            nonlocal link_failed_reported
+            if outcome.link_error and not link_failed_reported:
+                log.warn(f"Hardlink nicht moeglich ({outcome.link_error}); es wird kopiert.")
+                link_failed_reported = True
+            if outcome.error is not None:
+                if outcome.error.errno == errno.ENOSPC:
+                    raise BackupError("Sicherungsziel ist voll (kein Speicherplatz mehr).") from outcome.error
+                stats.errors += 1
+                errors.append({"path": info.path, "error": str(outcome.error)})
+                log.error(f"Datei nicht gesichert: {info.path}: {outcome.error}")
+                return
+            assert outcome.entry is not None
+            if outcome.action == "linked":
+                stats.unchanged += 1
+                stats.linked += 1
+                stats.total_bytes += outcome.size
+                log.file("unveraendert (Hardlink)", info.key)
+            else:
+                log.file("neu" if old is None else "unveraendert (kopiert)" if outcome.was_unchanged else "geaendert", f"{info.key} ({outcome.size} Bytes)")
                 if old is None:
                     stats.new += 1
-                elif was_unchanged:
+                elif outcome.was_unchanged:
                     stats.unchanged += 1
                 else:
                     stats.modified += 1
-                stats.bytes_transferred += size
-                stats.extra_storage_bytes += size
-                stats.total_bytes += size
-                entries.append(mf.FileEntry(info.key, size, mtime_ns, digest, info.attrs))
-            except OSError as error:
-                if os.path.lexists(fsutil.fs(destination)):
-                    try:
-                        fsutil.make_writable(destination)
-                        os.remove(fsutil.fs(destination))
-                    except OSError:
-                        pass
-                if error.errno == errno.ENOSPC:
-                    raise BackupError("Sicherungsziel ist voll (kein Speicherplatz mehr).") from error
-                stats.errors += 1
-                errors.append({"path": info.path, "error": str(error)})
-                log.error(f"Datei nicht gesichert: {info.path}: {error}")
+                stats.bytes_transferred += outcome.size
+                stats.extra_storage_bytes += outcome.size
+                stats.total_bytes += outcome.size
+            entries.append(outcome.entry)
+
+        def work(info: FileInfo, old: mf.FileEntry | None, unchanged: bool) -> _Outcome:
+            return _process_file(info, old, unchanged, stage=stage, base_path=base_path, use_links=use_links, detection=detection, delay=delay)
+
+        if threads <= 1:
+            for position, (info, old, unchanged) in enumerate(plan, 1):
+                _check_cancel(cancel)
+                if progress:
+                    progress('copy', position, len(plan), info.key)
+                handle(info, old, work(info, old, unchanged))
+        else:
+            # Hardlinks und Kopien mehrerer Dateien ueberlappen (die Aufrufe geben die Python-Sperre frei): das Anlegen, das Schreiben und
+            # fsync einer kleinen Datei wartet vor allem auf das Ziel, besonders bei Netzwerkzielen. Ergebnisse werden in Planreihenfolge
+            # ausgewertet, damit Manifest, Protokoll und Fortschritt unveraendert bleiben.
+            pending: collections.deque = collections.deque()
+            upcoming = iter(enumerate(plan, 1))
+            window = threads * 8
+            with ThreadPoolExecutor(max_workers=threads, thread_name_prefix="spb-copy") as pool:
+                try:
+                    while True:
+                        while len(pending) < window:
+                            item = next(upcoming, None)
+                            if item is None:
+                                break
+                            position, (info, old, unchanged) = item
+                            pending.append((position, info, old, pool.submit(work, info, old, unchanged)))
+                        if not pending:
+                            break
+                        position, info, old, future = pending.popleft()
+                        _check_cancel(cancel)
+                        if progress:
+                            progress('copy', position, len(plan), info.key)
+                        handle(info, old, future.result())
+                finally:
+                    for *_, future in pending:
+                        future.cancel()  # noch nicht begonnene Aufgaben entfallen; laufende werden beim Verlassen von 'with' abgewartet
 
         status = mf.COMPLETE if stats.errors == 0 else mf.PARTIAL
         manifest = mf.Manifest(
@@ -556,6 +634,11 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             log.warn(f"Teil-Stand gespeichert: {os.path.relpath(final, target)} - {result.message}")
         return result
     except BackupError as error:
+        if if_available and isinstance(error, TargetUnavailable):
+            result.status = WAITING
+            result.message = str(error)
+            log.info(f"Sicherungsziel nicht erreichbar, es wird spaeter erneut versucht: {error}")
+            return result
         result.status = FAILED
         result.message = str(error)
         stats.errors += 1
@@ -590,3 +673,4 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             )
         except Exception:  # noqa: BLE001 - Protokollfehler duerfen das Ergebnis nicht verdecken
             pass
+        log.close_live()

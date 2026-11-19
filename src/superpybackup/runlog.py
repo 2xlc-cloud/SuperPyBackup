@@ -26,6 +26,8 @@ class RunLog:
         self.echo = echo
         self.prefix = prefix  # z. B. "restore-"
         self.live_path: str | None = None
+        self._live = None  # offene Live-Datei (gepuffert); ein Hilfsthread schreibt sie spaetestens alle 0,5 s heraus
+        self._live_stop = threading.Event()
         self.warnings = 0
         self.errors = 0
         self._lock = threading.Lock()
@@ -88,27 +90,62 @@ class RunLog:
                 self._emit_stderr(f"Protokoll nicht beschreibbar: {error}")
 
     def start_live(self) -> None:
-        """Beginnt die Live-Datei `aktuell.log` (alle Ereignisse und jede einzelne Datei des laufenden Laufs; wird geleert)."""
+        """Beginnt die Live-Datei `aktuell.log` (alle Ereignisse und jede einzelne Datei des laufenden Laufs; wird geleert).
+
+        Die Datei bleibt offen und wird gepuffert geschrieben (eine Datei je Zeile zu oeffnen kostete bei 20 000 Dateien Sekunden);
+        Ereignisse werden sofort herausgeschrieben, Zeilen einzelner Dateien spaetestens nach 0,5 s (die Oberflaeche liest alle 5 s).
+        """
+        self.close_live()
         self.live_path = os.path.join(self.directory, LIVE_NAME)
         try:
-            with open(fsutil.fs(self.live_path), "w", encoding="utf-8", newline="\n"):
-                pass
+            self._live = open(fsutil.fs(self.live_path), "w", encoding="utf-8", newline="\n", buffering=64 * 1024)
         except OSError:
             self.live_path = None
+            return
+        self._live_stop = threading.Event()
+        threading.Thread(target=self._flush_live_regularly, args=(self._live_stop,), daemon=True).start()
 
-    def _write_live(self, text: str) -> None:
-        if not self.live_path:
+    def _flush_live_regularly(self, stop: threading.Event) -> None:
+        while not stop.wait(0.5):
+            with self._lock:
+                self._flush_live()
+
+    def _flush_live(self) -> None:
+        handle = self._live
+        if handle is None:
             return
         try:
-            with open(fsutil.fs(self.live_path), "a", encoding="utf-8", newline="\n") as handle:
-                handle.write(text + "\n")
-        except OSError:
+            handle.flush()
+        except (OSError, ValueError):
+            self._live = None
+
+    def close_live(self) -> None:
+        """Schreibt die Live-Datei fertig heraus und schliesst sie (am Ende des Laufs)."""
+        self._live_stop.set()
+        with self._lock:
+            handle, self._live = self._live, None
+        if handle is not None:
+            try:
+                handle.close()
+            except (OSError, ValueError):
+                pass
+
+    def _write_live(self, text: str, *, flush: bool = True) -> None:
+        handle = self._live
+        if not self.live_path or handle is None:
+            return
+        try:
+            handle.write(text + "\n")
+            if flush:
+                handle.flush()
+        except (OSError, ValueError):
             self.live_path = None
+            self._live = None
 
     def file(self, action: str, name: str) -> None:
         """Eine Datei des laufenden Laufs nur in die Live-Datei (nicht ins Tagesprotokoll, das waere zu gross)."""
         with self._lock:
-            self._write_live(f"{datetime.now():%Y-%m-%d %H:%M:%S.%f}"[:-3] + f" [DATEI] {action}: {name}")
+            self._write_live(f"{datetime.now():%Y-%m-%d %H:%M:%S.%f}"[:-3] + f" [DATEI] {action}: {name}", flush=False)
 
     def info(self, message: str) -> None:
         self.write("INFO", message)

@@ -75,7 +75,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
 def _backup_one(args: argparse.Namespace) -> int:
     config = _load_config(args)
     mode = engine.FULL if args.full else engine.INCREMENTAL if args.incremental else None
-    result = engine.run_backup(config, new_snapshot=True if args.new_snapshot else None, mode=mode, echo=None if args.quiet else sys.stdout)
+    result = engine.run_backup(config, new_snapshot=True if args.new_snapshot else None, mode=mode, echo=None if args.quiet else sys.stdout, if_available=bool(getattr(args, "if_available", False)))
     stats = result.stats
     if not args.quiet:
         print(f"\nStatus: {result.status}" + (f" - {result.message}" if result.message else ""))
@@ -288,6 +288,7 @@ def cmd_task(args: argparse.Namespace) -> int:
     else:
         job = cfgmod.job_of(args.config)
         name = scheduler.validate_name(args.name or jobsmod.task_name(scheduler.default_task_name(), job))
+    retry = int(getattr(args, "retry_minutes", 0) or 0)
     if args.action in ("install", "set"):
         if run_all:
             base = _base_config(args)
@@ -296,16 +297,18 @@ def cmd_task(args: argparse.Namespace) -> int:
                 raise cfgmod.ConfigError("Es gibt noch keine Sicherung mit Konfiguration.")
             for job in valid:  # nur installieren, wenn alle Konfigurationen gueltig sind
                 cfgmod.load(job.path)
-            program, arguments = scheduler.program_command(base, "backup --all --quiet")
+            program, arguments = scheduler.program_command(base, "backup --all --quiet" + (" --if-available" if retry else ""))
         else:
             config = _load_config(args)  # nur installieren, wenn die Konfiguration gueltig ist
-            program, arguments = scheduler.program_command(str(config.path) if config.path else None)
+            program, arguments = scheduler.program_command(str(config.path) if config.path else None, "backup --quiet" + (" --if-available" if retry else ""))
         elevated = bool(getattr(args, "elevated", False))
         if elevated and not vss.is_admin():
             print("Eine Aufgabe mit hoechsten Rechten (fuer Schattenkopien/VSS) kann nur aus einer als Administrator gestarteten Eingabeaufforderung eingerichtet werden.", file=sys.stderr)
             return 1
-        scheduler.install(name, program, arguments, delay_minutes=args.delay, daily_at=args.daily_at, elevated=elevated)
+        scheduler.install(name, program, arguments, delay_minutes=args.delay, daily_at=args.daily_at, elevated=elevated, retry_minutes=retry)
         print(f"Aufgabe eingerichtet: {name}" + (" (alle Sicherungen nacheinander)" if run_all else "") + f"\n  Programm: {program} {arguments}\n  Start: {args.delay} Minute(n) nach Anmeldung" + (f" und taeglich {args.daily_at}" if args.daily_at else "") + ("\n  Rechte: hoechste verfuegbare (Schattenkopien fuer gesperrte Dateien moeglich)" if elevated else ""))
+        if retry:
+            print(f"  Wiederholung: alle {retry} Minuten und bei jeder Netzwerkverbindung, solange das Sicherungsziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar); ohne Fehler und ohne Meldung")
         return 0
     if args.action == "status":
         print(json.dumps(scheduler.status(name), indent=2, ensure_ascii=False))
@@ -548,6 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
     kind_group.add_argument("--full", action="store_true", help="Vollsicherung erzwingen: alle Dateien neu kopieren, eigenstaendiger Stand (legt auch bei vorhandenem Tagesstand einen weiteren an)")
     kind_group.add_argument("--incremental", action="store_true", help="Inkrement erzwingen: nur Geaendertes kopieren, Unveraendertes per Hardlink (ohne Vorgaenger wird trotzdem voll gesichert)")
     backup.add_argument("--quiet", action="store_true", help="keine Ausgabe (fuer die geplante Aufgabe)")
+    backup.add_argument("--if-available", action="store_true", help="nur sichern, wenn das Ziel erreichbar ist; sonst ohne Fehler und ohne Meldung beenden (die Aufgabe versucht es spaeter erneut)")
     backup.add_argument("--all", action="store_true", help="alle Sicherungen nacheinander ausfuehren (eine fehlerhafte haelt die uebrigen nicht auf)")
     backup.set_defaults(func=cmd_backup)
 
@@ -586,6 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--all", action="store_true", help="Aufgabe fuer alle Sicherungen (fuehrt 'backup --all' aus) statt fuer die gewaehlte Sicherung")
     task.add_argument("--delay", type=int, default=2, help="Minuten nach der Anmeldung (Standard 2)")
     task.add_argument("--daily-at", help="zusaetzlich taeglich um HH:MM")
+    task.add_argument("--retry-minutes", type=int, default=0, help="alle N Minuten (5-1440) erneut versuchen und bei jeder Netzwerkverbindung starten, solange das Ziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar); 0 = aus")
     task.add_argument("--elevated", action="store_true", help="Aufgabe mit hoechsten Rechten (Administrator) einrichten bzw. pruefen: noetig, damit Schattenkopien (VSS) gesperrte Dateien sichern koennen")
     task.set_defaults(func=cmd_task)
 

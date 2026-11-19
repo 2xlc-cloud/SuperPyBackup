@@ -93,7 +93,7 @@ def _parse(data: Any) -> Manifest:
     if not isinstance(directories, list):
         raise ManifestError("Ungueltige Ordnerliste")
     for directory in directories:
-        fsutil.safe_join("X:\\root", directory)
+        fsutil.check_relative(directory)
         if directory.split("/")[0] not in names:
             raise ManifestError(f"Ordner ohne Kategorie: {directory}")
     files: list[FileEntry] = []
@@ -102,7 +102,7 @@ def _parse(data: Any) -> Manifest:
         if not isinstance(row, list) or len(row) != 5:
             raise ManifestError("Ungueltiger Dateieintrag")
         path, size, mtime_ns, digest, attrs = row
-        fsutil.safe_join("X:\\root", path)
+        fsutil.check_relative(path)
         if path.split("/")[0] not in names or path in seen:
             raise ManifestError(f"Ungueltiger oder doppelter Pfad: {path}")
         if not (isinstance(size, int) and size >= 0 and isinstance(mtime_ns, int) and isinstance(attrs, int) and isinstance(digest, str) and SHA256.match(digest)):

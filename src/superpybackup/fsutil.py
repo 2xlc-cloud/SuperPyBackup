@@ -98,14 +98,20 @@ def assert_plain_ancestors(path: str) -> None:
         cursor = parent
 
 
+def check_relative(relative: str) -> list[str]:
+    """Prueft einen relativen Manifest-Pfad ('a/b/c') und liefert seine Teile; lehnt Absolutes, Laufwerke, '\\' und '.'/'..' ab."""
+    if not isinstance(relative, str) or not relative or "\\" in relative or ":" in relative or relative.startswith("/"):
+        raise ValueError(f"Unsicherer relativer Pfad: {relative!r}")
+    parts = relative.split("/")
+    for part in parts:
+        if part in ("", ".", ".."):
+            raise ValueError(f"Unsicherer relativer Pfad: {relative!r}")
+    return parts
+
+
 def safe_join(root: str, relative: str) -> str:
     """Relativen Manifest-Pfad ('a/b/c') sicher unter root aufloesen; lehnt Absolutes und '..' ab."""
-    if not relative or "\\" in relative or ":" in relative or relative.startswith("/"):
-        raise ValueError(f"Unsicherer relativer Pfad: {relative!r}")
-    parts = PurePosixPath(relative).parts
-    if not parts or any(part in ("", ".", "..") for part in parts):
-        raise ValueError(f"Unsicherer relativer Pfad: {relative!r}")
-    return os.path.join(root, *parts)
+    return os.path.join(root, *check_relative(relative))
 
 
 def hash_file(path: str) -> str:

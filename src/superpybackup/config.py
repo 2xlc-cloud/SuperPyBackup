@@ -77,6 +77,8 @@ DEFAULTS: dict[str, Any] = {
         "min_free_bytes": 0,
         "warn_after_days": 3,
         "use_vss": "auto",
+        "max_file_size_mb": 0,
+        "threads": 8,
     },
     "logging": {"directory": "", "keep_days": 30, "max_file_mb": 20},
     "gui": {"theme": "dark", "close_to_tray": True},
@@ -252,6 +254,8 @@ def validate(data: dict[str, Any], *, require_target: bool = True) -> list[Sourc
     _int(backup["free_space_margin_percent"], "backup.free_space_margin_percent", 0, 100, problems)
     _int(backup["min_free_bytes"], "backup.min_free_bytes", 0, 1 << 50, problems)
     _int(backup["warn_after_days"], "backup.warn_after_days", 0, 3650, problems)
+    _int(backup["max_file_size_mb"], "backup.max_file_size_mb", 0, 100_000_000, problems)
+    _int(backup["threads"], "backup.threads", 1, 32, problems)
     if backup["use_vss"] not in ("off", "auto", "on"):
         problems.append(f"'backup.use_vss' muss off, auto oder on sein (gefunden: {backup['use_vss']!r}).")
     logging_cfg = data["logging"]

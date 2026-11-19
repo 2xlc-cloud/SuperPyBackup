@@ -425,6 +425,12 @@ class App(tk.Tk):
         ttk.Label(full_row, text="Tage (0 = nur Inkremente; dazwischen wird nur Geändertes kopiert)").pack(side="left")
         self.var_vss = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="Gesperrte Dateien über eine Schattenkopie (VSS) sichern – nur mit Administratorrechten (Aufgabe: task install --elevated)", variable=self.var_vss).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
+        self.var_max_mb = tk.StringVar(value="0")
+        size_row = ttk.Frame(box)
+        size_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(size_row, text="Dateien größer als").pack(side="left")
+        ttk.Spinbox(size_row, from_=0, to=100000000, width=9, textvariable=self.var_max_mb).pack(side="left", padx=6)
+        ttk.Label(size_row, text="MB nicht sichern (0 = keine Grenze)").pack(side="left")
         # Protokoll + Update
         box = ttk.LabelFrame(body, text="Protokoll und Updates", padding=10)
         box.grid(row=5, column=0, sticky="ew", **pad)
@@ -538,6 +544,10 @@ class App(tk.Tk):
         ttk.Spinbox(form, from_=0, to=60, width=6, textvariable=self.var_delay).grid(row=0, column=1, padx=8, sticky="w")
         ttk.Checkbutton(form, text="Zusätzlich täglich um (HH:MM):", variable=self.var_daily_on).grid(row=1, column=0, sticky="w", pady=6)
         ttk.Entry(form, textvariable=self.var_daily_at, width=8).grid(row=1, column=1, padx=8, sticky="w")
+        self.var_retry = tk.StringVar(value="0")
+        ttk.Label(form, text="Erneut versuchen alle (Minuten, 0 = aus):").grid(row=2, column=0, sticky="w")
+        ttk.Spinbox(form, from_=0, to=1440, width=6, textvariable=self.var_retry).grid(row=2, column=1, padx=8, sticky="w")
+        ttk.Label(form, text="… und bei jeder Netzwerkverbindung, solange das Sicherungsziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar). Ohne Fehlermeldung.", style="Sub.TLabel").grid(row=3, column=0, columnspan=3, sticky="w")
         buttons = ttk.Frame(tab)
         buttons.pack(fill="x")
         self.btn_task_install = ttk.Button(buttons, text="Aufgabe einrichten / ändern", style="Big.TButton", command=self.install_task)
@@ -555,6 +565,9 @@ class App(tk.Tk):
         ttk.Spinbox(all_box, from_=0, to=60, width=6, textvariable=self.var_all_delay).grid(row=0, column=1, padx=8, sticky="w")
         ttk.Checkbutton(all_box, text="Zusätzlich täglich um (HH:MM):", variable=self.var_all_daily_on).grid(row=0, column=2, padx=(18, 0), sticky="w")
         ttk.Entry(all_box, textvariable=self.var_all_daily_at, width=8).grid(row=0, column=3, padx=8, sticky="w")
+        self.var_all_retry = tk.StringVar(value="0")
+        ttk.Label(all_box, text="Erneut versuchen alle (Minuten, 0 = aus):").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Spinbox(all_box, from_=0, to=1440, width=6, textvariable=self.var_all_retry).grid(row=2, column=1, padx=8, sticky="w", pady=(6, 0))
         self.btn_all_task_install = ttk.Button(all_box, text="Aufgabe für alle einrichten / ändern", command=self.install_all_task)
         self.btn_all_task_install.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(all_box, text="Status", command=self.refresh_all_task).grid(row=1, column=2, sticky="w", padx=(18, 0), pady=(8, 0))
@@ -1103,6 +1116,7 @@ class App(tk.Tk):
         self.var_change.set(CHANGE_LABELS[data["backup"]["change_detection"]])
         self.var_hardlinks.set(data["backup"]["use_hardlinks"])
         self.var_vss.set(data["backup"].get("use_vss", "auto") != "off")
+        self.var_max_mb.set(str(data["backup"].get("max_file_size_mb", 0)))
         self.var_full_days.set(str(data["backup"]["full_every_days"]))
         self.var_log_dir.set(data["logging"]["directory"])
         self.var_log_days.set(str(data["logging"]["keep_days"]))
@@ -1137,6 +1151,7 @@ class App(tk.Tk):
         data["backup"]["existing_daily"] = next(key for key, label in EXISTING_LABELS.items() if label == self.var_existing.get())
         data["backup"]["change_detection"] = next(key for key, label in CHANGE_LABELS.items() if label == self.var_change.get())
         data["backup"]["use_hardlinks"] = self.var_hardlinks.get()
+        data["backup"]["max_file_size_mb"] = number(self.var_max_mb, "Größengrenze (MB)")
         data["backup"]["use_vss"] = "off" if not self.var_vss.get() else ("on" if data["backup"].get("use_vss") == "on" else "auto")  # "on" (Pflicht) bleibt erhalten
         data["backup"]["full_every_days"] = number(self.var_full_days, "Vollsicherung alle (Tage)")
         data["logging"]["directory"] = self.var_log_dir.get().strip()
@@ -1834,12 +1849,20 @@ class App(tk.Tk):
             raise scheduler.SchedulerError("Die Verzögerung muss eine ganze Zahl sein.") from error
         return delay, (self.var_daily_at.get().strip() if self.var_daily_on.get() else None)
 
+    @staticmethod
+    def _retry_minutes(variable: tk.StringVar) -> int:
+        try:
+            return int(variable.get().strip() or "0")
+        except ValueError as error:
+            raise scheduler.SchedulerError("Die Wiederholung muss eine ganze Zahl sein (0 = aus, sonst 5 bis 1440 Minuten).") from error
+
     def install_task(self) -> None:
         try:
             delay, daily = self._task_form()
             config = cfgmod.load(self.config_path, require_target=True)
-            program, arguments = scheduler.program_command(str(self.config_path))
-            scheduler.install(self.task_name, program, arguments, delay_minutes=delay, daily_at=daily)
+            retry = self._retry_minutes(self.var_retry)
+            program, arguments = scheduler.program_command(str(self.config_path), "backup --quiet" + (" --if-available" if retry else ""))
+            scheduler.install(self.task_name, program, arguments, delay_minutes=delay, daily_at=daily, retry_minutes=retry)
         except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
             self.error("Aufgabe nicht eingerichtet", str(error))
             return
@@ -1861,9 +1884,10 @@ class App(tk.Tk):
                 return
             self.var_delay.set(str(info["delay_minutes"] if info["delay_minutes"] is not None else 2))
             self.var_daily_on.set(bool(info["daily_at"]))
+            self.var_retry.set(str(info.get("retry_minutes") or 0))
             if info["daily_at"]:
                 self.var_daily_at.set(info["daily_at"])
-            lines = [f"Aufgabe: {info['name']}", f"Aktiv: {'ja' if info['enabled'] else 'NEIN'}", f"Start nach Anmeldung: {info['delay_minutes']} Min.", f"Täglich: {info['daily_at'] or 'nein'}", f"Versteckt: {'ja' if info['hidden'] else 'nein'}", f"Rechte: {info['run_level']}", f"Parallele Instanzen: {info['multiple_instances']}", f"Programm: {info['command']}", f"Argumente: {info['arguments']}"]
+            lines = [f"Aufgabe: {info['name']}", f"Aktiv: {'ja' if info['enabled'] else 'NEIN'}", f"Start nach Anmeldung: {info['delay_minutes']} Min.", f"Täglich: {info['daily_at'] or 'nein'}", f"Erneut versuchen: {str(info['retry_minutes']) + ' Min. und bei Netzwerkverbindung' if info.get('retry_minutes') else 'nein'}", f"Versteckt: {'ja' if info['hidden'] else 'nein'}", f"Rechte: {info['run_level']}", f"Parallele Instanzen: {info['multiple_instances']}", f"Programm: {info['command']}", f"Argumente: {info['arguments']}"]
             self._append(self.task_text, "\n".join(lines) + "\n", clear=True)
 
         self.run_async(lambda: scheduler.status(self.task_name), done)
@@ -1932,8 +1956,9 @@ class App(tk.Tk):
                 raise cfgmod.ConfigError("Es gibt noch keine Sicherung mit Konfiguration.")
             for job in valid:  # nur einrichten, wenn alle Konfigurationen gueltig sind
                 cfgmod.load(job.path, require_target=True)
-            program, arguments = scheduler.program_command(str(self.base_config_path), "backup --all --quiet")
-            scheduler.install(self.all_task_name, program, arguments, delay_minutes=delay, daily_at=daily, description="SuperPyBackup: alle Sicherungen nacheinander.")
+            retry = self._retry_minutes(self.var_all_retry)
+            program, arguments = scheduler.program_command(str(self.base_config_path), "backup --all --quiet" + (" --if-available" if retry else ""))
+            scheduler.install(self.all_task_name, program, arguments, delay_minutes=delay, daily_at=daily, description="SuperPyBackup: alle Sicherungen nacheinander.", retry_minutes=retry)
         except (cfgmod.ConfigError, scheduler.SchedulerError) as error:
             self.error("Aufgabe für alle nicht eingerichtet", str(error))
             return

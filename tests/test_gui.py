@@ -133,11 +133,12 @@ def test_settings_roundtrip_and_backup_file(app, env):
     app.var_change.set(gui.CHANGE_LABELS["hash"])
     app.var_hardlinks.set(False)
     app.var_vss.set(False)
+    app.var_max_mb.set("250")
     app.var_log_days.set("10")
     app.var_check_updates.set(False)
     assert app.save_settings() is True
     saved = json.loads((env.root / "config.json").read_text(encoding="utf-8"))
-    assert saved["backup"]["use_vss"] == "off"
+    assert saved["backup"]["use_vss"] == "off" and saved["backup"]["max_file_size_mb"] == 250
     app.var_vss.set(True)
     assert app.save_settings() is True and json.loads((env.root / "config.json").read_text(encoding="utf-8"))["backup"]["use_vss"] == "auto"
     app.config_data["backup"]["use_vss"] = "on"  # "Pflicht" aus der Konfigurationsdatei bleibt beim Speichern erhalten
@@ -1156,3 +1157,25 @@ def test_search_all_snapshots_preview_and_select_for_restore(app, env, tmp_path)
     app.preview_selected()
     app.wait_idle(30)
     assert len(shown) == 2
+
+
+def test_task_tab_retry_minutes_roundtrip_and_validation(app, env):
+    configure(app, env)
+    app.var_retry.set("3")  # 1-4 Minuten sind nicht erlaubt
+    app.btn_task_install.invoke()
+    assert app.dialogs.kinds("fehler") and not scheduler.status(app.task_name)["exists"]
+    app.var_retry.set("abc")
+    app.btn_task_install.invoke()
+    assert len(app.dialogs.kinds("fehler")) == 2
+    app.var_retry.set("30")
+    app.btn_task_install.invoke()
+    info = scheduler.status(app.task_name)
+    assert info["exists"] and info["retry_minutes"] == 30 and info["on_network"] and "--if-available" in info["arguments"]
+    app.var_retry.set("0")
+    app.refresh_task()
+    app.wait_idle(30)
+    assert app.var_retry.get() == "30" and "Erneut versuchen: 30 Min." in app.task_text.get("1.0", "end")  # Anzeige liest die echte Aufgabe
+    app.var_retry.set("0")
+    app.btn_task_install.invoke()
+    info = scheduler.status(app.task_name)
+    assert info["retry_minutes"] == 0 and "--if-available" not in info["arguments"]

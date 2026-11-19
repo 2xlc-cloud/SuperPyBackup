@@ -14,6 +14,15 @@ from dataclasses import dataclass, field
 from . import credstore, fsutil, winapi
 
 ERROR_SESSION_CREDENTIAL_CONFLICT = 1219
+# Das Ziel ist (noch) nicht erreichbar - anders als eine falsche Anmeldung, die man beheben muss: Netzpfad/-name nicht gefunden,
+# kein Netzwerk, Netzwerk/Host nicht erreichbar, Zeitueberschreitung, keine Anmeldeserver, RPC nicht verfuegbar.
+UNREACHABLE_CODES = {53, 51, 59, 64, 67, 121, 1167, 1222, 1231, 1232, 1311, 1722, 1460}
+
+
+class ConnectionProblem(str):
+    """Fehlermeldung der Verbindung; `unreachable` sagt, ob nur das Ziel gerade nicht erreichbar ist (statt Anmeldung/Konfiguration falsch)."""
+
+    unreachable = False
 ERROR_ALREADY_ASSIGNED = 85
 
 MESSAGES = {
@@ -114,10 +123,11 @@ def ensure_connected(root: str, log=None) -> str | None:
         if log:
             log.warn(f"Zu {name} besteht bereits eine Verbindung mit anderen Anmeldedaten; sie wird verwendet.")
         return None
-    message = f"Anmeldung an {name} als {user} fehlgeschlagen: {describe(code)}"
+    problem = ConnectionProblem(f"Anmeldung an {name} als {user} fehlgeschlagen: {describe(code)}")
+    problem.unreachable = code in UNREACHABLE_CODES
     if log:
-        log.error(message)
-    return message
+        (log.warn if problem.unreachable else log.error)(str(problem))
+    return problem
 
 
 @dataclass

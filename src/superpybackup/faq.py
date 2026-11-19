@@ -28,6 +28,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("Inkrement erzwingen", "Kopiert nur Geändertes, Unverändertes wird per Hardlink übernommen. Ohne Vorgänger wird trotzdem voll gesichert. Ohne Option entscheidet die Einstellung backup.full_every_days (Standard: alle 7 Tage voll).", "backup --incremental"),
         ("Alle Sicherungen nacheinander", "Führt die Hauptsicherung und alle weiteren Sicherungen (Befehl job) nacheinander aus. Eine fehlerhafte Sicherung hält die übrigen nicht auf; der Rückgabewert ist der schlechteste.", "backup --all"),
         ("Eine bestimmte Sicherung", "Die Option --job steht vor dem Befehl und wählt eine weitere Sicherung (ohne Angabe: Standard). Sie gilt für backup, list, restore, verify, cleanup, config und task.", "--job Arbeit backup"),
+        ("Nur wenn das Ziel da ist", "Beendet sich still (ohne Fehler und ohne Meldung), wenn das Sicherungsziel gerade nicht erreichbar ist; gedacht für Aufgaben mit Wiederholung.", "backup --quiet --if-available"),
         ("Ohne Ausgabe", "Für geplante Aufgaben: keine Konsolenausgabe, Ergebnis nur im Protokoll und im Rückgabewert (0 = vollstaendig, 2 = Teil-Stand, 1 = Fehler).", "backup --quiet"),
     ]),
     ("Stände ansehen und prüfen", [
@@ -78,6 +79,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("Windows-Aufgabe", [
         ("Aufgabe einrichten", "Legt die versteckte Aufgabe an: Start 2 Minuten nach der Anmeldung, ohne Administratorrechte.", "task install"),
         ("Aufgabe mit hoechsten Rechten (VSS)", "Nur aus einer als Administrator gestarteten Eingabeaufforderung möglich. Eine Aufgabe mit höchsten Rechten kann über eine Schattenkopie (VSS) auch gesperrte Dateien sichern, z. B. Outlook-PSTs. Einstellung: backup.use_vss (off, auto, on).", "task install --elevated"),
+        ("Erneut versuchen, wenn das Ziel fehlt", "Die Aufgabe versucht es alle N Minuten (5 bis 1440) und bei jeder Netzwerkverbindung erneut, solange das Sicherungsziel fehlt (Laufwerk nicht angeschlossen, Freigabe nicht erreichbar) – ohne Fehlermeldung. Dazu gehört backup --if-available.", "task install --retry-minutes 30"),
         ("Andere Wartezeit", "Wartezeit in Minuten nach der Anmeldung.", "task install --delay 5"),
         ("Zusätzlich täglich", "Startet die Sicherung zusätzlich jeden Tag zur angegebenen Uhrzeit (HH:MM).", "task install --daily-at 20:00"),
         ("Aufgabe ändern", "Aktualisiert eine vorhandene Aufgabe mit neuen Werten.", "task set --delay 3 --daily-at 12:30"),

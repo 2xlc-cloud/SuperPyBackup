@@ -56,9 +56,16 @@ def program_command(config_path: str | None, command_line: str = "backup --quiet
 DESCRIPTION = "SuperPyBackup: versionierte Sicherung der persoenlichen Benutzerordner."
 
 
-def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None, description: str = DESCRIPTION, elevated: bool = False) -> str:
+def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2, daily_at: str | None = None, description: str = DESCRIPTION, elevated: bool = False, retry_minutes: int = 0) -> str:
     if not 0 <= delay_minutes <= 60:
         raise SchedulerError("Die Verzoegerung muss zwischen 0 und 60 Minuten liegen.")
+    if retry_minutes != 0 and not 5 <= retry_minutes <= 1440:
+        raise SchedulerError("Die Wiederholung muss 0 (aus) oder 5 bis 1440 Minuten betragen.")
+    repeat = f"<Repetition><Interval>PT{retry_minutes}M</Interval></Repetition>" if retry_minutes else ""
+    network = (
+        "<EventTrigger><Enabled>true</Enabled><Subscription>&lt;QueryList&gt;&lt;Query Id='0' Path='Microsoft-Windows-NetworkProfile/Operational'&gt;&lt;Select Path='Microsoft-Windows-NetworkProfile/Operational'&gt;*[System[Provider[@Name='Microsoft-Windows-NetworkProfile'] and EventID=10000]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription><Delay>PT1M</Delay></EventTrigger>"
+        if retry_minutes else ""
+    )
     daily = ""
     if daily_at:
         try:
@@ -66,11 +73,11 @@ def build_xml(command: str, arguments: str, sid: str, *, delay_minutes: int = 2,
         except ValueError as error:
             raise SchedulerError("Die Uhrzeit muss im Format HH:MM angegeben werden.") from error
         boundary = datetime.now().replace(hour=clock.hour, minute=clock.minute, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%S")
-        daily = f"<CalendarTrigger><StartBoundary>{boundary}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>"
+        daily = f"<CalendarTrigger><StartBoundary>{boundary}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>{repeat}</CalendarTrigger>"
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>{escape(description)}</Description></RegistrationInfo>
-  <Triggers><LogonTrigger><Enabled>true</Enabled><Delay>PT{delay_minutes}M</Delay><UserId>{escape(sid)}</UserId></LogonTrigger>{daily}</Triggers>
+  <Triggers><LogonTrigger>{repeat}<Enabled>true</Enabled><Delay>PT{delay_minutes}M</Delay><UserId>{escape(sid)}</UserId></LogonTrigger>{daily}{network}</Triggers>
   <Principals><Principal id="User"><UserId>{escape(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>{'HighestAvailable' if elevated else 'LeastPrivilege'}</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
@@ -98,10 +105,10 @@ def _decode(data: bytes) -> str:
     return data.decode("latin-1")
 
 
-def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None, description: str = DESCRIPTION, elevated: bool = False) -> str:
+def install(name: str, command: str, arguments: str, *, delay_minutes: int = 2, daily_at: str | None = None, sid: str | None = None, description: str = DESCRIPTION, elevated: bool = False, retry_minutes: int = 0) -> str:
     """Legt die Aufgabe an oder aktualisiert sie (idempotent). Aufgaben anderer Namen bleiben unberuehrt."""
     validate_name(name)
-    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at, description=description, elevated=elevated)
+    xml = build_xml(command, arguments, sid or winapi.current_user_sid(), delay_minutes=delay_minutes, daily_at=daily_at, description=description, elevated=elevated, retry_minutes=retry_minutes)
     with tempfile.TemporaryDirectory(prefix="superpybackup-task-") as folder:
         path = os.path.join(folder, "task.xml")
         with open(path, "wb") as handle:
@@ -129,6 +136,11 @@ def status(name: str) -> dict[str, object]:
         match = re.fullmatch(r"PT(\d+)M", logon.text)
         delay = int(match.group(1)) if match else None
     daily = boundary.text[11:16] if boundary is not None and boundary.text else None
+    interval = find(".//t:LogonTrigger/t:Repetition/t:Interval")
+    retry = None
+    if interval is not None and interval.text:
+        match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?", interval.text)
+        retry = (int(match.group(1) or 0) * 60 + int(match.group(2) or 0)) if match else None
     text_of = lambda path: (find(path).text if find(path) is not None else None)  # noqa: E731
     return {
         "exists": True,
@@ -137,6 +149,8 @@ def status(name: str) -> dict[str, object]:
         "hidden": text_of(".//t:Settings/t:Hidden") == "true",
         "delay_minutes": delay,
         "daily_at": daily,
+        "retry_minutes": retry or 0,
+        "on_network": find(".//t:EventTrigger") is not None,
         "command": text_of(".//t:Actions/t:Exec/t:Command"),
         "arguments": text_of(".//t:Actions/t:Exec/t:Arguments"),
         # Windows laesst Standardwerte im exportierten XML weg: LeastPrivilege und IgnoreNew sind die Vorgaben.
