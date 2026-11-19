@@ -11,7 +11,8 @@ from typing import TextIO
 
 from . import fsutil
 
-LOG_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\.\d+)?\.log$")
+LIVE_NAME = "aktuell.log"
+LOG_NAME =re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\.\d+)?\.log$")
 
 
 class RunLog:
@@ -24,6 +25,7 @@ class RunLog:
         self.max_bytes = max_bytes
         self.echo = echo
         self.prefix = prefix  # z. B. "restore-"
+        self.live_path: str | None = None
         self.warnings = 0
         self.errors = 0
         self._lock = threading.Lock()
@@ -66,6 +68,7 @@ class RunLog:
         elif level == "ERROR":
             self.errors += 1
         with self._lock:
+            self._write_live(f"{line[:23]} [{level}] {message}")
             if self.echo is not None:
                 try:
                     # Die Anzeige ist kuerzer als die Datei (ohne SID und Zielpfad, die in jeder Zeile gleich waeren).
@@ -83,6 +86,29 @@ class RunLog:
             except OSError as error:
                 self._usable = False
                 self._emit_stderr(f"Protokoll nicht beschreibbar: {error}")
+
+    def start_live(self) -> None:
+        """Beginnt die Live-Datei `aktuell.log` (alle Ereignisse und jede einzelne Datei des laufenden Laufs; wird geleert)."""
+        self.live_path = os.path.join(self.directory, LIVE_NAME)
+        try:
+            with open(fsutil.fs(self.live_path), "w", encoding="utf-8", newline="\n"):
+                pass
+        except OSError:
+            self.live_path = None
+
+    def _write_live(self, text: str) -> None:
+        if not self.live_path:
+            return
+        try:
+            with open(fsutil.fs(self.live_path), "a", encoding="utf-8", newline="\n") as handle:
+                handle.write(text + "\n")
+        except OSError:
+            self.live_path = None
+
+    def file(self, action: str, name: str) -> None:
+        """Eine Datei des laufenden Laufs nur in die Live-Datei (nicht ins Tagesprotokoll, das waere zu gross)."""
+        with self._lock:
+            self._write_live(f"{datetime.now():%Y-%m-%d %H:%M:%S.%f}"[:-3] + f" [DATEI] {action}: {name}")
 
     def info(self, message: str) -> None:
         self.write("INFO", message)

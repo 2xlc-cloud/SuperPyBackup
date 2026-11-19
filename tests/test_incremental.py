@@ -136,3 +136,18 @@ def test_cli_full_and_incremental_flags(env):
     assert inc.returncode == 0 and "Art: Inkrement" in inc.stdout
     both = env.cli("backup", "--full", "--incremental", extra_env={"PYTHONIOENCODING": "utf-8"})
     assert both.returncode != 0 and "not allowed" in both.stderr
+
+
+def test_live_file_lists_every_file_of_the_run(env):
+    """aktuell.log (fuer die GUI bei Aufgaben-Laeufen) nennt jede Datei und wird mit jedem Lauf neu begonnen; das Tagesprotokoll bleibt schlank."""
+    write_tree(env.src, {"a.txt": "eins", "sub/b.txt": "zwei", "c.txt": "drei"})
+    live = env.home / "Logs" / "aktuell.log"
+    env.run("2026-03-10 12:00:00")
+    first = live.read_text(encoding="utf-8")
+    assert first.count("[DATEI] neu:") == 3 and "Test/a.txt" in first and "Test/sub/b.txt" in first and "Sicherungslauf beginnt" in first
+    (env.src / "c.txt").write_text("drei-neu", encoding="utf-8")
+    env.run("2026-03-11 12:00:00")
+    second = live.read_text(encoding="utf-8")
+    assert "neu:" not in second and second.count("unveraendert (Hardlink)") == 2 and second.count("[DATEI] geaendert:") == 1  # geleert und neu beschrieben
+    day_logs = [p for p in (env.home / "Logs").glob("*.log") if p.name != "aktuell.log"]
+    assert day_logs and all("[DATEI]" not in p.read_text(encoding="utf-8") for p in day_logs)

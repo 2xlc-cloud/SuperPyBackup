@@ -25,6 +25,7 @@ from typing import Any, Callable
 from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, engine, faq, fsutil, manifest as mf, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, tray as trayicon, updater, winapi
 from . import icon as appicon
 from .identity import get_identity
+from . import runlog
 from .runlog import RunLog
 
 KNOWN_LABELS = {"Desktop": "Desktop", "Documents": "Dokumente", "Pictures": "Bilder", "Music": "Musik", "Videos": "Videos", "Downloads": "Downloads", "Favorites": "Favoriten"}
@@ -79,6 +80,9 @@ class ScrollFrame(ttk.Frame):
         canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units") if self.winfo_ismapped() else None)
 
 
+EXTERNAL_REFRESH_SECONDS = 5  # so oft wird das Protokoll einer extern gestarteten Sicherung neu gelesen
+
+
 class App(tk.Tk):
     def __init__(self, config_path: str | os.PathLike[str] | None = None, *, task_name: str | None = None, hidden: bool = False, tray: bool = False, start_in_tray: bool = False, autostart_name: str | None = None) -> None:
         super().__init__()
@@ -130,6 +134,7 @@ class App(tk.Tk):
         self._external_offset = 0
         self._external_log = ""
         self._external_failed = False
+        self._external_next = 0.0
         self._external_mutex = ""
         self.after(100, self._poll)
         self.after(1000, self._watch_external)
@@ -661,14 +666,17 @@ class App(tk.Tk):
             if not self._external:
                 self._external = True
                 self._external_failed = False
-                self._external_log = os.path.join(self._log_dir(), f"{time.strftime('%Y-%m-%d')}.log")
-                self._external_offset = self._run_start_offset(self._external_log)
+                self._external_log = os.path.join(self._log_dir(), runlog.LIVE_NAME)  # Live-Datei: alle Ereignisse und jede Datei
+                self._external_offset = 0
+                self._external_next = 0.0
                 self._append(self.backup_log, "", clear=True)
                 self.result_label.configure(text="Sicherung läuft (von einer Aufgabe oder Konsole gestartet) ...", style="TLabel")
                 self.set_status("Sicherung läuft (extern gestartet) ...")
                 self._tray_status("Sicherung läuft (extern gestartet) ...")
                 self._update_icon_state()
-            self._read_external_log()
+            if time.time() >= self._external_next:  # Anzeige alle 5 Sekunden aktualisieren
+                self._external_next = time.time() + EXTERNAL_REFRESH_SECONDS
+                self._read_external_log()
         elif self._external:
             self._read_external_log()
             self._external = False
@@ -682,26 +690,15 @@ class App(tk.Tk):
             return
         self._update_icon_state()
 
-    @staticmethod
-    def _run_start_offset(path: str) -> int:
-        """Position der letzten Zeile "Start <Version>" (Beginn des laufenden Laufs), sonst das Dateiende."""
-        try:
-            size = os.path.getsize(path)
-            with open(path, "rb") as handle:
-                handle.seek(max(0, size - 262144))
-                base = handle.tell()
-                data = handle.read()
-        except OSError:
-            return 0
-        found = None
-        for found in re.finditer(rb"^.{23} \[INFO\] User=\S* Target=\S* Start \d", data, re.MULTILINE):
-            pass
-        return base + found.start() if found else size
-
     def _read_external_log(self) -> None:
-        """Haengt neue Zeilen der Tagesprotokolldatei an die Anzeige an (Sicherungs-Reiter und, falls offen, Protokoll-Reiter)."""
+        """Haengt neue Zeilen der Live-Datei an die Anzeige an (Sicherungs-Reiter und, falls offen, Protokoll-Reiter)."""
         try:
             with open(self._external_log, "rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                if size < self._external_offset:  # Datei wurde neu begonnen
+                    self._external_offset = 0
+                    self._append(self.backup_log, "", clear=True)
                 handle.seek(self._external_offset)
                 data = handle.read()
         except OSError:
@@ -713,9 +710,15 @@ class App(tk.Tk):
         text = data[:end + 1].decode("utf-8", errors="replace")
         if " [ERROR] " in text:
             self._external_failed = True
-        # wie in der Konsole: ohne SID und Zielpfad, nur Zeit, Stufe und Text
-        self._append(self.backup_log, re.sub(r" User=\S* Target=\S*", "", text))
-        self._reload_logs_if_visible()
+        lines = text.splitlines(keepends=True)
+        if len(lines) > 2000:  # sehr viele Dateien seit der letzten Aktualisierung: nur das Ende anzeigen
+            lines = [f"... {len(lines) - 2000} Zeilen ausgelassen (stehen in {runlog.LIVE_NAME}) ...\n"] + lines[-2000:]
+        self._append(self.backup_log, "".join(lines))
+        extra = int(self.backup_log.index("end-1c").split(".")[0]) - 6000
+        if extra > 0:  # Anzeige begrenzen, damit sie bei Hunderttausenden Dateien nicht waechst
+            self.backup_log.configure(state="normal")
+            self.backup_log.delete("1.0", f"{extra}.0")
+            self.backup_log.configure(state="disabled")
 
     def _reload_logs_if_visible(self) -> None:
         try:
@@ -1411,7 +1414,7 @@ class App(tk.Tk):
     def refresh_logs(self) -> None:
         folder = self._log_dir()
         try:
-            names = sorted((name for name in os.listdir(folder) if name.endswith(".log")), reverse=True)
+            names = sorted((name for name in os.listdir(folder) if name.endswith(".log") and name != runlog.LIVE_NAME), reverse=True)
         except OSError:
             names = []
         self.log_combo.configure(values=names)

@@ -300,6 +300,8 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             result.message = "Ein Sicherungslauf ist bereits aktiv."
             log.info(result.message)
             return result
+        log.start_live()  # erst nach dem Mutex: ein abgewiesener zweiter Lauf darf die Anzeige des laufenden nicht leeren
+        log.info(f"Sicherungslauf beginnt ({__version__})")
         root = config.backup_root
         if not root or not os.path.isabs(root):
             raise BackupError("Sicherungsziel ist nicht als absoluter Pfad konfiguriert.")
@@ -423,6 +425,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
                             stats.linked += 1
                             entries.append(mf.FileEntry(info.key, info.size, info.mtime_ns, old.sha256, info.attrs))
                             stats.total_bytes += info.size
+                            log.file("unveraendert (Hardlink)", info.key)
                             continue
                         except OSError as error:
                             if os.path.lexists(fsutil.fs(destination)):
@@ -434,6 +437,7 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
                 fsutil.set_mtime(destination, mtime_ns)
                 fsutil.make_readonly(destination)
                 was_unchanged = old is not None and old.sha256 == digest
+                log.file("neu" if old is None else "unveraendert (kopiert)" if was_unchanged else "geaendert", f"{info.key} ({size} Bytes)")
                 if old is None:
                     stats.new += 1
                 elif was_unchanged:

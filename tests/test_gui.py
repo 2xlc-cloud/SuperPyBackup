@@ -813,8 +813,8 @@ def test_backup_started_elsewhere_turns_icon_orange_and_streams_the_log(app, env
     app._external_mutex = "Local\\SuperPyBackupTest-" + uuid.uuid4().hex  # nie der echte Mutex
     log_dir = Path(app._log_dir())
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{time.strftime('%Y-%m-%d')}.log"
-    log_file.write_text("2000-01-01 00:00:00.000 [INFO] User=S-1 Target=X:/t alter Eintrag\n", encoding="utf-8")
+    log_file = log_dir / "aktuell.log"  # Live-Datei des laufenden Laufs
+    log_file.write_text("", encoding="utf-8")
     app.check_external()
     assert not app._external and app._icon_state == "idle"
     mutex = winapi.NamedMutex(app._external_mutex)
@@ -826,13 +826,25 @@ def test_backup_started_elsewhere_turns_icon_orange_and_streams_the_log(app, env
         app.check_external()
         assert app._external and app._icon_state == "busy" and app.tray.states[-1] == "busy"
         shown = app.backup_log.get("1.0", "end")
-        assert "Start 1.7.1" in shown and "alter Eintrag" not in shown and "S-1-5-21" not in shown  # nur neue Zeilen, ohne Kennungen
+        assert "Start 1.7.1" in shown
         with open(log_file, "a", encoding="utf-8", newline="\n") as handle:
             handle.write("2026-11-19 10:00:05.000 [INFO] User=S-1-5-21 Target=R:/Backup/x Scan: 5 Dateien\n2026-11-19 10:00:06.000 [ERROR] User=S-1-5-21 Target=R:/Backup/x Datei nicht gesichert: a\n")
             handle.write("halbe Zeile ohne Ende")
         app.check_external()
+        assert "Scan: 5 Dateien" not in app.backup_log.get("1.0", "end")  # Anzeige wird nur alle 5 Sekunden aktualisiert
+        assert gui.EXTERNAL_REFRESH_SECONDS == 5 and 4 < app._external_next - time.time() <= 5
+        app._external_next = 0  # die 5 Sekunden sind um
+        app.check_external()
         shown = app.backup_log.get("1.0", "end")
         assert "Scan: 5 Dateien" in shown and "halbe Zeile" not in shown  # unvollstaendige Zeile wartet
+        log_file.write_text("2026-11-19 11:00:00.000 [INFO] neuer Lauf\n", encoding="utf-8")  # Datei wurde neu begonnen
+        app._external_next = 0
+        app.check_external()
+        shown = app.backup_log.get("1.0", "end")
+        assert "neuer Lauf" in shown and "Scan: 5 Dateien" not in shown
+        with open(log_file, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write("2026-11-19 11:00:06.000 [ERROR] Datei nicht gesichert: a\n")
+        app._external_next = 0
     finally:
         mutex.close()
     app.check_external()
