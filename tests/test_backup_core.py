@@ -96,13 +96,22 @@ def test_restore_earlier_version(env, tmp_path):
 # 11 -----------------------------------------------------------------------------------------
 def test_missing_target_fails_without_side_effects(env):
     write_tree(env.src, {"a.txt": "a"})
-    gone = env.root / "nicht-vorhanden"
+    gone = env.root / "nicht-vorhanden" / "ziel"  # auch der uebergeordnete Ordner fehlt (Laufwerk/Freigabe nicht da, Tippfehler)
     result = env.run(config_overrides={"backup_root": str(gone)})
     assert result.status == engine.FAILED and result.exit_code == 1
-    assert "nicht vorhanden" in result.message and not gone.exists()
+    assert "nicht vorhanden" in result.message and not gone.exists() and not gone.parent.exists()
     log_text = (env.home / "Logs").glob("*.log").__next__().read_text(encoding="utf-8")
     assert "[ERROR]" in log_text and "Sicherungsziel nicht vorhanden" in log_text
     assert read_tree(env.src) == {"a.txt": b"a"}
+
+
+def test_target_folder_is_created_one_level_deep(env):
+    write_tree(env.src, {"a.txt": "a"})
+    new = env.root / "neues-ziel"  # uebergeordneter Ordner existiert: der Zielordner wird angelegt
+    result = env.run(config_overrides={"backup_root": str(new)})
+    assert result.status == engine.COMPLETE and new.is_dir() and list(new.glob("*/Daily/*"))
+    log_text = next((env.home / "Logs").glob("*.log")).read_text(encoding="utf-8")
+    assert "Sicherungsziel angelegt" in log_text
 
 
 def test_missing_source_fails_and_creates_no_snapshot(env):

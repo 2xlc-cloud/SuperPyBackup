@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
-from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, credstore, engine, faq, fsutil, jobs as jobsmod, manifest as mf, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, tray as trayicon, updater, winapi
+from . import __version__, autostart, cleanup as cleanupmod, config as cfgmod, credstore, engine, faq, fsutil, jobs as jobsmod, manifest as mf, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, staleness, tray as trayicon, updater, winapi
 from . import icon as appicon
 from .identity import get_identity
 from . import runlog
@@ -149,6 +149,7 @@ class App(tk.Tk):
         self.after(1000, self._watch_external)
         if auto_update:
             self.after(8000, self.auto_update_check)
+            self.after(12000, self.auto_stale_check)
 
     # ------------------------------------------------------------------ Aufbau
     def _style(self) -> None:
@@ -1825,6 +1826,23 @@ class App(tk.Tk):
                 updater.remember_notified(info.version)
 
         self.run_async(work, done)
+
+    def auto_stale_check(self) -> None:
+        """Warnt (Desktop-Meldung, einmal pro Tag und Sicherung), wenn eine Sicherung laenger als backup.warn_after_days ausbleibt; beim Start und alle 6 Stunden."""
+        if not self._closing:
+            self.after(6 * 3600 * 1000, self.auto_stale_check)
+
+        def work() -> None:
+            for job in jobsmod.list_jobs(self.base_config_path):
+                if job.standard and not job.path.is_file():
+                    continue
+                try:
+                    config = cfgmod.load(str(job.path), require_target=False)
+                except cfgmod.ConfigError:
+                    continue
+                staleness.check(config, self._update_log(config))
+
+        self.run_async(work, lambda result, error: None)
 
     def force_update(self, info: updater.UpdateInfo) -> None:
         """Pflichtupdate: mehr als update.force_after_versions Versionen zurueck - Installation ohne Rueckfrage (mit allen Pruefungen und Rollback)."""

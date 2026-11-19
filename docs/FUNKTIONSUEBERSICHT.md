@@ -33,6 +33,8 @@ Grundlage ist die Analyse des PowerShell-Projekts `SuperPSBackup` (Stand 1.1.0, 
 | 24 | Mehrere Sicherungen (Profile): eigene Quellen, Ziel (Unterordner `__Name`), Aufbewahrung und Einstellungen je Sicherung; Auswahl, Neu und Entfernen in der Oberfläche, `job list/add/remove`, `--job NAME`, `backup --all`; Aufgabenplanung je Sicherung und für alle (`task install --all`) | neu | `jobs`, `config`, `cli`, `gui`, `scheduler` |
 | 25 | Netzwerkziel (UNC-Freigabe) mit hinterlegten Anmeldedaten: Kennwort per Windows-DPAPI nur für den eigenen Benutzer verschlüsselt in `credentials.json` im Programmordner; Anmeldung ohne Laufwerksbuchstaben (WNetAddConnection2), Verbindungstest (Anmeldung, Ordner, Schreiben, Hardlinks, Speicher), GUI-Dialog und `credentials set/list/remove/test` | neu | `credstore`, `netshare`, `config`, `engine`, `cli`, `gui` |
 | 26 | Pflichtupdate: mehr als `update.force_after_versions` (Standard 5, 0 = aus) veröffentlichte Versionen hinter der neuesten → automatische Prüfungen (nach der Sicherung, `update check --quiet`, Oberfläche) installieren ohne Rückfrage, mit allen Prüfungen und Rollback der normalen Installation | neu | `updater`, `config`, `cli`, `gui` |
+| 27 | Warnung bei ausbleibender Sicherung: Desktop-Meldung, wenn der letzte Erfolg länger als `backup.warn_after_days` (Standard 3, 0 = aus) zurückliegt; einmal pro Tag und Sicherung; Zustand lokal im Programmordner | neu | `staleness`, `engine`, `cli`, `gui`, `config` |
+| 28 | Zielordner automatisch anlegen (eine Ebene, nur wenn der übergeordnete Ordner existiert) | neu | `engine` |
 | 19 | Migration vom Altnamen UserProfileBackup | entfällt (neues Projekt) | – |
 
 ## 2. Gefundene Schwächen der Referenz (nicht übernommen)

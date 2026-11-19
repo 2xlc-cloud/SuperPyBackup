@@ -121,7 +121,7 @@ def test_run_log_contains_required_information(env):
 
 
 def test_errors_and_warnings_are_logged_and_counted(env):
-    result = env.run(config_overrides={"backup_root": str(env.root / "fehlt")})
+    result = env.run(config_overrides={"backup_root": str(env.root / "fehlt" / "ziel")})
     text = next((env.home / "Logs").glob("*.log")).read_text(encoding="utf-8")
     assert "[ERROR]" in text and "Status=Failed" in text and "Fehler=1" in text and result.status == engine.FAILED
 

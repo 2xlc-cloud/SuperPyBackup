@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
-from . import netshare, __version__, config as cfgmod, fsutil, manifest as mf, retention, snapshots, winapi
+from . import netshare, __version__, config as cfgmod, fsutil, manifest as mf, retention, snapshots, staleness, winapi
 from .identity import Identity, get_identity
 from .runlog import RunLog
 
@@ -183,6 +183,19 @@ def scan_sources(sources: list[cfgmod.Source], excluded, log: RunLog, stats: Sta
     return files, directories, categories, errors
 
 
+def _create_target_folder(root: str, log: RunLog) -> None:
+    """Legt den Zielordner an, aber nur eine Ebene tief: Existiert der uebergeordnete Ordner nicht (Laufwerk/Freigabe fehlt,
+    Tippfehler), bleibt es beim Fehler, damit nie versehentlich ein Pfad auf dem falschen Datentraeger entsteht."""
+    parent = os.path.dirname(root.rstrip("\\/"))
+    if not parent or parent == root or not os.path.isdir(fsutil.fs(parent)):
+        return
+    try:
+        os.mkdir(fsutil.fs(root))
+        log.info(f"Sicherungsziel angelegt: {root}")
+    except OSError as error:
+        log.warn(f"Sicherungsziel konnte nicht angelegt werden: {root}: {error}")
+
+
 def _stage_cleanup(target: str, log: RunLog) -> None:
     for path in snapshots.leftover_work_dirs(target):
         try:
@@ -340,6 +353,8 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
         connection_error = netshare.ensure_connected(root, log)
         if connection_error:
             raise BackupError(connection_error)
+        if not os.path.isdir(fsutil.fs(root)):
+            _create_target_folder(root, log)
         if not os.path.isdir(fsutil.fs(root)):
             raise BackupError(f"Sicherungsziel nicht vorhanden oder nicht erreichbar: {root}")
         fsutil.assert_plain_directory(root)
@@ -553,6 +568,8 @@ def run_backup(config: cfgmod.Config, *, as_of: datetime | None = None, new_snap
             lock.release()
         mutex.close()
         result.seconds = time.perf_counter() - started
+        if result.status in (COMPLETE, ALREADY):
+            staleness.record_success(config)
         try:
             log.info(
                 f"Ende Status={result.status} Art={result.kind or '-'} Dauer={result.seconds:.2f}s Gescannt={stats.scanned} Neu={stats.new} Geaendert={stats.modified} "

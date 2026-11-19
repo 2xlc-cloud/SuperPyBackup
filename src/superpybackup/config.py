@@ -75,6 +75,7 @@ DEFAULTS: dict[str, Any] = {
         "full_every_days": 7,
         "free_space_margin_percent": 5,
         "min_free_bytes": 0,
+        "warn_after_days": 3,
     },
     "logging": {"directory": "", "keep_days": 30, "max_file_mb": 20},
     "gui": {"theme": "dark", "close_to_tray": True},
@@ -248,6 +249,7 @@ def validate(data: dict[str, Any], *, require_target: bool = True) -> list[Sourc
     _int(backup["full_every_days"], "backup.full_every_days", 0, 3650, problems)
     _int(backup["free_space_margin_percent"], "backup.free_space_margin_percent", 0, 100, problems)
     _int(backup["min_free_bytes"], "backup.min_free_bytes", 0, 1 << 50, problems)
+    _int(backup["warn_after_days"], "backup.warn_after_days", 0, 3650, problems)
     logging_cfg = data["logging"]
     if not isinstance(logging_cfg["directory"], str) or (logging_cfg["directory"] and not os.path.isabs(logging_cfg["directory"])):
         problems.append("'logging.directory' muss leer (Standard) oder ein absoluter Pfad sein.")

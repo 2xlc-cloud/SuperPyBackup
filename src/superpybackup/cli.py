@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, cleanup as cleanupmod, config as cfgmod, credstore, engine, fsutil, jobs as jobsmod, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, updater
+from . import __version__, cleanup as cleanupmod, config as cfgmod, credstore, engine, fsutil, jobs as jobsmod, netshare, notify as notifymod, restore as restoremod, scheduler, shortcut as shortcutmod, snapshots, staleness, updater
 from .identity import get_identity
 from .runlog import RunLog
 
@@ -87,6 +87,8 @@ def _backup_one(args: argparse.Namespace) -> int:
     message = notifymod.backup_message(result, {engine.FULL: "Vollsicherung", engine.INCREMENTAL: "Inkrement"}.get(result.kind, ""), config.job)
     if message:
         notifymod.notify(config.notifications, *message, log=_safe_log(config))
+    if result.status not in (engine.COMPLETE, engine.ALREADY):
+        staleness.check(config, _safe_log(config))  # Lauf nicht erfolgreich: lange ausbleibende Sicherung melden
     if result.status != engine.BUSY and not getattr(args, "all", False):
         try:
             log = _log(config, quiet=True)
@@ -134,6 +136,21 @@ def _safe_log(config: cfgmod.Config) -> RunLog | None:
         return _log(config, quiet=True)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _warn_overdue_jobs(args: argparse.Namespace) -> None:
+    """Warnt fuer jede Sicherung (Standard und weitere), deren letzter Erfolg zu lange zurueckliegt. Nie eine Ausnahme."""
+    try:
+        for job in jobsmod.list_jobs(_base_config(args)):
+            if job.standard and not job.path.is_file():
+                continue
+            try:
+                config = cfgmod.load(str(job.path), require_target=False)
+            except cfgmod.ConfigError:
+                continue
+            staleness.check(config, _safe_log(config))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -456,6 +473,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         info = updater.check_for_update(config.update)
         if args.quiet:  # geplante Pruefung: still, nur Desktop-Meldung bei neuer Version und Eintrag im Protokoll
             log = _safe_log(config)
+            _warn_overdue_jobs(args)  # die taegliche Aufgabe prueft auch, ob eine Sicherung zu lange ausbleibt
             if info is None:
                 if log:
                     log.info(f"Updatepruefung: SuperPyBackup {__version__} ist aktuell.")
