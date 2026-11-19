@@ -1045,3 +1045,59 @@ def test_connection_test_button_reports_the_result(app, env):
     app.dialogs.calls.clear()
     app.test_connection()
     assert app.dialogs.kinds("fehler")  # ohne Ziel kein Test
+
+
+def test_gui_installs_a_forced_update_without_asking(app, env, monkeypatch, tmp_path):
+    from test_updater import FakeGitHub, newer_tags, ok_smoke
+    from superpybackup import updater as upd
+
+    github = FakeGitHub()
+    try:
+        github.release_list = newer_tags(7)
+        github.tag = newer_tags(7)[-1]
+        github.files = {"SuperPyBackup.exe": b"GUI-EXE neu", "SuperPyBackupCmd.exe": b"CMD-EXE neu"}
+        install = tmp_path / "install"
+        install.mkdir()
+        (install / "SuperPyBackup.exe").write_bytes(b"GUI-EXE alt")
+        (install / "SuperPyBackupCmd.exe").write_bytes(b"CMD-EXE alt")
+        monkeypatch.setattr(upd, "_default_smoke_test", ok_smoke)
+        configure(app, env, update={**github.settings, "force_after_versions": 5})
+        app.force_install_dir = str(install)
+        app.dialogs.answer = False  # eine Rueckfrage wuerde "Nein" erhalten: beim Pflichtupdate darf es keine geben
+        app.check_update()
+        app.wait_idle(60)
+        assert (install / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE neu" and (install / "SuperPyBackupCmd.exe").read_bytes() == b"CMD-EXE neu"
+        assert "Pflichtupdate" in app.update_label.cget("text") and "installiert" in app.update_label.cget("text")
+        assert not app.dialogs.kinds("ja/nein") and app.dialogs.kinds("info") and "7 Versionen" in app.dialogs.kinds("info")[-1][2]
+        # unterhalb der Grenze: nur Hinweis, nichts wird installiert
+        github.release_list = newer_tags(5)
+        github.tag = newer_tags(5)[-1]
+        (install / "SuperPyBackup.exe").write_bytes(b"GUI-EXE alt")
+        app.check_update()
+        app.wait_idle(60)
+        assert (install / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE alt" and "Neue Version verfügbar" in app.update_label.cget("text")
+    finally:
+        github.close()
+
+
+def test_gui_auto_update_check_reports_but_only_forces_beyond_the_limit(app, env, monkeypatch, tmp_path):
+    from test_updater import FakeGitHub, newer_tags, ok_smoke
+    from superpybackup import updater as upd
+
+    github = FakeGitHub()
+    try:
+        github.release_list = newer_tags(2)
+        github.tag = newer_tags(2)[-1]
+        monkeypatch.setattr(upd, "_default_smoke_test", ok_smoke)
+        configure(app, env, update={**github.settings, "force_after_versions": 5})
+        install = tmp_path / "install"
+        install.mkdir()
+        (install / "SuperPyBackup.exe").write_bytes(b"alt")
+        app.force_install_dir = str(install)
+        app.auto_update_check()
+        app.wait_idle(60)
+        assert app.last_update is not None and app.last_update.behind == 2 and (install / "SuperPyBackup.exe").read_bytes() == b"alt"
+        assert "Neue Version verfügbar" in app.update_label.cget("text")
+        app._closing = True  # den Wiederholungszeitgeber nicht weiterlaufen lassen
+    finally:
+        github.close()

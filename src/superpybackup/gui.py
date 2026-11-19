@@ -84,7 +84,7 @@ EXTERNAL_REFRESH_SECONDS = 5  # so oft wird das Protokoll einer extern gestartet
 
 
 class App(tk.Tk):
-    def __init__(self, config_path: str | os.PathLike[str] | None = None, *, task_name: str | None = None, hidden: bool = False, tray: bool = False, start_in_tray: bool = False, autostart_name: str | None = None, job: str | None = None) -> None:
+    def __init__(self, config_path: str | os.PathLike[str] | None = None, *, task_name: str | None = None, hidden: bool = False, tray: bool = False, start_in_tray: bool = False, autostart_name: str | None = None, job: str | None = None, auto_update: bool = False) -> None:
         super().__init__()
         self.title(f"SuperPyBackup {__version__}")
         self.geometry("980x720")
@@ -144,8 +144,11 @@ class App(tk.Tk):
         self._external_failed = False
         self._external_next = 0.0
         self._external_mutex = ""
+        self.force_install_dir: str | None = None  # nur fuer Tests: Ordner, in dem das Pflichtupdate die Programme ersetzt
         self.after(100, self._poll)
         self.after(1000, self._watch_external)
+        if auto_update:
+            self.after(8000, self.auto_update_check)
 
     # ------------------------------------------------------------------ Aufbau
     def _style(self) -> None:
@@ -1785,8 +1788,70 @@ class App(tk.Tk):
                 self.update_label.configure(text=f"Neue Version verfügbar: {info.version} (installiert: {__version__}).  {info.page}", style="TLabel")
                 self.btn_update_install.configure(state="normal")
                 self.notify(notifymod.UPDATE, "Neue Version von SuperPyBackup", f"Version {info.version} ist verfügbar (installiert: {__version__}).")
+                if info.forced:
+                    self.force_update(info)
 
         self.run_async(lambda: updater.check_for_update(update_settings), done)
+
+    def _update_log(self, config: cfgmod.Config) -> RunLog:
+        identity = get_identity()
+        return RunLog(config.log_dir, user=identity.sid, target=config.backup_root, max_bytes=config.log_max_bytes)
+
+    def auto_update_check(self) -> None:
+        """Automatische Pruefung der laufenden Oberflaeche (beim Start und danach alle 6 Stunden; die Pruefabstaende regelt update.check_interval_hours)."""
+        if not self._closing:
+            self.after(6 * 3600 * 1000, self.auto_update_check)
+        try:
+            config = cfgmod.load(self.base_config_path, require_target=False) if self.base_config_path.is_file() else None
+        except cfgmod.ConfigError:
+            config = None
+        if config is None or not config.update["check_for_updates"]:
+            return
+
+        def work() -> updater.UpdateInfo | None:
+            return updater.periodic_check(config, self._update_log(config))
+
+        def done(info: updater.UpdateInfo | None, error: BaseException | None) -> None:
+            if error or info is None:
+                return
+            self.last_update = info
+            self._update_settings = config.update
+            self.update_label.configure(text=f"Neue Version verfügbar: {info.version} (installiert: {__version__}).  {info.page}", style="TLabel")
+            self.btn_update_install.configure(state="normal")
+            if info.forced:
+                self.force_update(info)
+            elif not updater.already_notified(info.version):
+                self.notify(notifymod.UPDATE, "Neue Version von SuperPyBackup", f"Version {info.version} ist verfügbar (installiert: {__version__}).")
+                updater.remember_notified(info.version)
+
+        self.run_async(work, done)
+
+    def force_update(self, info: updater.UpdateInfo) -> None:
+        """Pflichtupdate: mehr als update.force_after_versions Versionen zurueck - Installation ohne Rueckfrage (mit allen Pruefungen und Rollback)."""
+        try:
+            config = cfgmod.load(self.base_config_path, require_target=False)
+        except cfgmod.ConfigError as error:
+            self.error("Pflichtupdate", str(error))
+            return
+        self.update_label.configure(text=f"Pflichtupdate: Die installierte Version {__version__} ist {info.behind} Versionen alt. Version {info.version} wird ohne Rückfrage installiert ...", style="Bad.TLabel")
+        self.set_status("Pflichtupdate wird installiert ...")
+
+        def done(names: list[str] | None, error: BaseException | None) -> None:
+            if error:
+                self.update_label.configure(text=f"Pflichtupdate nicht installiert (bestehende Installation unverändert): {error}", style="Bad.TLabel")
+                self.set_status("Pflichtupdate fehlgeschlagen.")
+                self.notify(notifymod.ERROR, "Pflichtupdate fehlgeschlagen", str(error))
+                return
+            if not names:
+                self.update_label.configure(text=f"Pflichtupdate auf {info.version} ist fällig, aber nur in der installierten EXE-Version möglich.", style="Bad.TLabel")
+                return
+            self.update_label.configure(text=f"Pflichtupdate: Version {info.version} installiert ({', '.join(names)}). Bitte das Programm neu starten.", style="Ok.TLabel")
+            self.btn_update_install.configure(state="disabled")
+            self.set_status("Pflichtupdate installiert. Bitte neu starten.")
+            self.notify(notifymod.UPDATE, "SuperPyBackup aktualisiert (Pflichtupdate)", f"Version {info.version} ist installiert. Bitte neu starten.")
+            self.info("Pflichtupdate installiert", f"SuperPyBackup war {info.behind} Versionen alt und wurde auf {info.version} aktualisiert.\nBitte starten Sie das Programm neu.")
+
+        self.run_async(lambda: updater.run_forced_update(config, info, self._update_log(config), install_dir=self.force_install_dir), done)
 
     def _install_dir(self) -> str | None:
         if getattr(sys, "frozen", False):
@@ -2041,7 +2106,7 @@ def main_gui(config_path: str | None = None, tray_start: bool = False, job: str 
                 return 0
     except Exception:  # noqa: BLE001 - die Einzelinstanz-Pruefung darf den Start nie verhindern
         mutex = None
-    app = App(config_path, tray=use_tray, start_in_tray=tray_start, job=job)
+    app = App(config_path, tray=use_tray, start_in_tray=tray_start, job=job, auto_update=use_tray)
     app.mainloop()
     if mutex is not None:
         mutex.close()

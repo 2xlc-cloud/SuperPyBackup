@@ -28,6 +28,7 @@ class FakeGitHub:
         self.requests: list[str] = []
         self.drop_assets: set[str] = set()
         self.draft = False
+        self.release_list: list | None = None  # Eintraege fuer /releases?per_page=100: Tag oder (Tag, draft, prerelease)
         self.prerelease = False
         outer = self
 
@@ -47,6 +48,9 @@ class FakeGitHub:
                     all_assets = {**assets, "SHA256SUMS.txt": sums.encode()}
                     listing = [{"name": n, "size": outer.size_override.get(n, len(d)), "browser_download_url": f"{base}/{REPO}/releases/download/{outer.tag}/{n}"} for n, d in all_assets.items() if n not in outer.drop_assets]
                     return self._send(200, json.dumps({"tag_name": outer.tag, "draft": outer.draft, "prerelease": outer.prerelease, "html_url": f"{base}/{REPO}/releases/tag/{outer.tag}", "assets": listing}).encode())
+                if self.path.startswith(f"/repos/{REPO}/releases?") and outer.release_list is not None:
+                    rows = [{"tag_name": e, "draft": False, "prerelease": False} if isinstance(e, str) else {"tag_name": e[0], "draft": e[1], "prerelease": e[2]} for e in outer.release_list]
+                    return self._send(200, json.dumps(rows).encode())
                 prefix = f"/{REPO}/releases/download/{outer.tag}/"
                 if self.path.startswith(prefix):
                     name = self.path[len(prefix):]
@@ -274,3 +278,149 @@ def test_install_refuses_folder_without_programs(github, tmp_path):
 def test_parse_sums_accepts_standard_formats():
     digest = "a" * 64
     assert updater.parse_sums(f"{digest}  datei.exe\n{digest} *zwei.exe\nmuell\n") == {"datei.exe": digest, "zwei.exe": digest}
+
+
+# ---- Pflichtupdate: mehr als 5 Versionen zurueck -----------------------------------------------------------------
+def newer_tags(count: int) -> list[str]:
+    """count veroeffentlichte Versionen, die neuer sind als die installierte (plus Aelteres, Entwuerfe und Vorabversionen, die nicht zaehlen)."""
+    major = int(__version__.split(".")[0]) + 1
+    return [f"v{major}.{n}.0" for n in range(count)]
+
+
+def test_count_newer_counts_only_published_newer_versions(github):
+    github.release_list = newer_tags(3) + ["v0.0.1", f"v{__version__}", ("v99.0.0", True, False), ("v98.0.0", False, True), "v50.0.0"]
+    assert updater.count_newer(github.settings, __version__) == 4  # 3 + v50.0.0; aelter, gleich, Entwurf und Vorabversion zaehlen nicht
+    github.release_list = None  # Liste nicht abrufbar: mindestens die neueste Version
+    assert updater.count_newer(github.settings, __version__) == 1
+
+
+@pytest.mark.parametrize("newer, limit, forced", [(1, 5, False), (5, 5, False), (6, 5, True), (30, 5, True), (6, 0, False), (3, 2, True), (2, 2, False)])
+def test_forced_only_when_more_versions_behind_than_the_limit(github, newer, limit, forced):
+    github.release_list = newer_tags(newer)
+    github.tag = newer_tags(newer)[-1]
+    settings = {**github.settings, "force_after_versions": limit}
+    info = updater.check_for_update(settings)
+    assert info.behind == newer and info.forced is forced
+
+
+def test_default_limit_is_five_and_a_missing_list_never_forces(github):
+    github.tag = "v9.9.9"
+    github.release_list = None
+    info = updater.check_for_update(github.settings)  # Einstellung nicht angegeben: Standard 5
+    assert info.behind == 1 and info.forced is False
+    github.release_list = newer_tags(6)
+    assert updater.check_for_update(github.settings).forced is True
+    assert updater.check_for_update(github.settings, current="9.9.9") is None  # aktuell: nichts zu tun
+
+
+def forced_config(env, github, **update):
+    from superpybackup import config as cfgmod
+
+    return cfgmod.from_dict({**env.config().data, "update": {**github.settings, "force_after_versions": 5, **update}})
+
+
+def test_forced_update_installs_without_asking_and_verifies_like_a_normal_update(env, github, install_dir):
+    github.release_list = newer_tags(6)
+    github.tag = newer_tags(6)[-1]
+    github.files = {"SuperPyBackup.exe": b"GUI-EXE neu", "SuperPyBackupCmd.exe": b"CMD-EXE neu"}
+    config = forced_config(env, github)
+    info = updater.check_for_update(config.update)
+    assert info.forced
+    log = RunLog(str(env.home / "Logs"))
+    names = updater.run_forced_update(config, info, log, install_dir=str(install_dir), smoke_test=ok_smoke)
+    assert sorted(names) == ["SuperPyBackup.exe", "SuperPyBackupCmd.exe"]
+    assert (install_dir / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE neu" and (install_dir / "SuperPyBackupCmd.exe.old").read_bytes() == b"CMD-EXE alt"
+    text = "".join(p.read_text(encoding="utf-8") for p in (env.home / "Logs").glob("*.log"))
+    assert "Pflichtupdate" in text and "6 Versionen" in text
+
+
+def test_forced_update_does_nothing_below_the_limit_or_when_switched_off(env, github, install_dir):
+    github.release_list = newer_tags(5)
+    github.tag = newer_tags(5)[-1]
+    before = snapshot_of(install_dir)
+    log = RunLog(str(env.home / "Logs"))
+    config = forced_config(env, github)
+    info = updater.check_for_update(config.update)
+    assert info.forced is False and updater.run_forced_update(config, info, log, install_dir=str(install_dir), smoke_test=ok_smoke) is None
+    assert updater.run_forced_update(config, None, log, install_dir=str(install_dir)) is None
+    github.release_list = newer_tags(8)
+    github.tag = newer_tags(8)[-1]
+    info = updater.check_for_update(config.update)
+    assert info.forced
+    assert updater.run_forced_update(forced_config(env, github, check_for_updates=False), info, log, install_dir=str(install_dir)) is None  # Pruefung ausgeschaltet: nie
+    assert snapshot_of(install_dir) == before and github.asset_requests() == []
+
+
+def test_forced_update_failure_leaves_the_installation_untouched(env, github, install_dir):
+    github.release_list = newer_tags(7)
+    github.tag = newer_tags(7)[-1]
+    github.sums_override = {"SuperPyBackup.exe": "0" * 64, "SuperPyBackupCmd.exe": "0" * 64}
+    config = forced_config(env, github)
+    info = updater.check_for_update(config.update)
+    before = snapshot_of(install_dir)
+    with pytest.raises(updater.UpdateError, match="SHA-256"):
+        updater.run_forced_update(config, info, RunLog(str(env.home / "Logs")), install_dir=str(install_dir), smoke_test=ok_smoke)
+    assert snapshot_of(install_dir) == before
+    text = "".join(p.read_text(encoding="utf-8") for p in (env.home / "Logs").glob("*.log"))
+    assert "Pflichtupdate" in text and "fehlgeschlagen" in text
+
+
+def test_forced_update_from_source_is_only_reported(env, github):
+    github.release_list = newer_tags(7)
+    github.tag = newer_tags(7)[-1]
+    config = forced_config(env, github)
+    info = updater.check_for_update(config.update)
+    assert updater.run_forced_update(config, info, RunLog(str(env.home / "Logs"))) is None  # kein frozen: es gibt nichts zu ersetzen
+    assert github.asset_requests() == []
+
+
+def run_cli_in_process(env, install_dir, monkeypatch, *args):
+    from superpybackup import cli
+
+    real = updater.run_forced_update
+    monkeypatch.setattr(updater, "run_forced_update", lambda config, info, log, **kw: real(config, info, log, install_dir=str(install_dir), smoke_test=ok_smoke))
+    return cli.main(["--config", str(env.root / "config.json"), *args])
+
+
+def test_scheduled_update_check_installs_a_forced_update(env, github, install_dir, monkeypatch):
+    github.release_list = newer_tags(6)
+    github.tag = newer_tags(6)[-1]
+    github.files = {"SuperPyBackup.exe": b"GUI-EXE neu", "SuperPyBackupCmd.exe": b"CMD-EXE neu"}
+    env.write_config_file(update={**github.settings, "force_after_versions": 5})
+    assert run_cli_in_process(env, install_dir, monkeypatch, "update", "check", "--quiet") == 0
+    assert (install_dir / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE neu"
+
+
+def test_backup_run_installs_a_forced_update_after_the_backup(env, github, install_dir, monkeypatch):
+    from conftest import write_tree
+
+    write_tree(env.src, {"a.txt": "inhalt"})
+    github.release_list = newer_tags(9)
+    github.tag = newer_tags(9)[-1]
+    github.files = {"SuperPyBackup.exe": b"GUI-EXE neu", "SuperPyBackupCmd.exe": b"CMD-EXE neu"}
+    env.write_config_file(update={**github.settings, "force_after_versions": 5})
+    assert run_cli_in_process(env, install_dir, monkeypatch, "backup", "--quiet") == 0
+    assert list((env.dst).glob("*/Daily/*")) and (install_dir / "SuperPyBackupCmd.exe").read_bytes() == b"CMD-EXE neu"  # erst gesichert, dann aktualisiert
+
+
+def test_a_failed_forced_update_never_breaks_the_backup(env, github, install_dir, monkeypatch):
+    from conftest import write_tree
+
+    write_tree(env.src, {"a.txt": "inhalt"})
+    github.release_list = newer_tags(9)
+    github.tag = newer_tags(9)[-1]
+    github.sums_override = {"SuperPyBackup.exe": "f" * 64, "SuperPyBackupCmd.exe": "f" * 64}
+    env.write_config_file(update={**github.settings, "force_after_versions": 5})
+    before = snapshot_of(install_dir)
+    assert run_cli_in_process(env, install_dir, monkeypatch, "backup", "--quiet") == 0  # Sicherung bleibt erfolgreich
+    assert snapshot_of(install_dir) == before
+
+
+def test_interactive_check_only_announces_the_forced_update(env, github, install_dir, monkeypatch, capsys):
+    github.release_list = newer_tags(6)
+    github.tag = newer_tags(6)[-1]
+    env.write_config_file(update={**github.settings, "force_after_versions": 5})
+    assert run_cli_in_process(env, install_dir, monkeypatch, "update", "check") == 0
+    output = capsys.readouterr().out
+    assert "6 Versionen alt" in output and "Pflichtupdate" in output
+    assert (install_dir / "SuperPyBackup.exe").read_bytes() == b"GUI-EXE alt"  # 'check' laedt und installiert nichts

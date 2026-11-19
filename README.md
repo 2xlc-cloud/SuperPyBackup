@@ -114,7 +114,7 @@ Globale Option: `--config PFAD` (Standard `%LOCALAPPDATA%\SuperPyBackup\config.j
     "free_space_margin_percent": 5, "min_free_bytes": 0
   },
   "logging": { "directory": "", "keep_days": 30, "max_file_mb": 20 },   // leer = %LOCALAPPDATA%\SuperPyBackup\Logs
-  "update": { "check_for_updates": true, "check_interval_hours": 24, "repository": "2xlc-cloud/SuperPyBackup", "api_url": "https://api.github.com" },
+  "update": { "check_for_updates": true, "check_interval_hours": 24, "force_after_versions": 5, "repository": "2xlc-cloud/SuperPyBackup", "api_url": "https://api.github.com" },
   "notifications": { "enabled": false, "on_success": true, "on_update": true, "on_error": true },   // Desktop-Meldungen (Standard: aus); die drei weiteren Schalter wählen die Ereignisse
   "gui": { "theme": "dark", "close_to_tray": true }   // Design "dark" (Standard) oder "light"; close_to_tray: Schließen blendet nur aus (Infobereich)
 }
@@ -171,6 +171,8 @@ Laufzeit, gescannte/neue/geänderte/unveränderte/ausgelassene/fehlerhafte Datei
 Aufbewahrungsbereinigung, Warnungen/Fehler und den Status. Fehler vor dem Start (z. B. ungültige Konfiguration) landen auch ohne Konsole in `errors.log`, unerwartete Abstürze in `crash.log`.
 
 ## Updates
+
+**Pflichtupdate:** Ist die installierte Version mehr als `update.force_after_versions` (Standard **5**) veröffentlichte Versionen hinter der neuesten, installieren die **automatischen** Prüfungen das Update **ohne Rückfrage**: nach einer Sicherung, bei der geplanten Updateprüfung (`update check --quiet`) und in der Oberfläche (beim Start, danach alle 6 Stunden, und bei „Nach Updates suchen“). Gezählt werden die Versionen auf GitHub, die neuer sind als die installierte (Entwürfe und Vorabversionen zählen nicht); bei genau 5 ist es noch kein Pflichtupdate, bei 6 schon. Es gelten alle Sicherungen der normalen Installation (nur dieses Repository, Größe, SHA-256, Probelauf, Rollback, Vorversion als `.old`); schlägt es fehl, bleibt die Installation unverändert, wird protokolliert (und bei eingeschalteten Meldungen gemeldet) und beim nächsten Prüfabstand erneut versucht. Eine Sicherung wird nie dadurch aufgehalten: Das Update kommt erst danach. Eine laufende Oberfläche muss danach neu gestartet werden. Aus: `"force_after_versions": 0` oder `"check_for_updates": false`; beim Start aus dem Quellcode wird nur protokolliert. Der Befehl `update check` zeigt nur an, dass ein Pflichtupdate fällig ist.
 
 `update check` fragt nur die neueste GitHub-Release ab. `update install` lädt erst **nach ausdrücklicher Bestätigung** `SuperPyBackup.exe`, `SuperPyBackupCmd.exe` und `SHA256SUMS.txt`
 herunter, prüft Download-Adresse (nur dieses Repository), Größe und SHA-256, startet die neue Datei erst danach einmal mit `--version`, tauscht die Programme aus und behält die Vorversion als `.old`

@@ -2,7 +2,10 @@
 
 Sicherheitsregeln
   * Pruefen laedt nie ein Programm herunter.
-  * Installation nur nach ausdruecklicher Bestaetigung (Aufrufer uebergibt confirm).
+  * Installation nur nach ausdruecklicher Bestaetigung (Aufrufer uebergibt confirm) - mit einer Ausnahme, dem Pflichtupdate:
+    Liegen mehr als `update.force_after_versions` (Standard 5) neuere Versionen vor, installieren die automatischen Pruefungen
+    (nach einer Sicherung, geplante Updatepruefung, Oberflaeche) ohne Rueckfrage. Alle uebrigen Pruefungen unten gelten dafuer
+    unveraendert; 0 schaltet das Pflichtupdate aus, ebenso `update.check_for_updates: false`.
   * Download-URLs muessen zum konfigurierten Repository gehoeren; Groesse und SHA-256 (SHA256SUMS.txt der Release) werden geprueft.
   * Ein heruntergeladenes Programm wird erst nach bestandener Pruefung ueberhaupt ausgefuehrt (nur `--version`).
   * Austausch mit Rollback: bei jedem Fehler bleibt die bisherige Installation unveraendert.
@@ -40,12 +43,17 @@ class UpdateError(Exception):
     pass
 
 
+DEFAULT_FORCE_AFTER = 5
+
+
 @dataclass
 class UpdateInfo:
     version: str
     tag: str
     assets: dict[str, dict[str, object]]
     page: str = ""
+    behind: int = 1  # Anzahl veroeffentlichter Versionen, die neuer sind als die installierte
+    forced: bool = False  # Pflichtupdate: mehr als force_after_versions Versionen zurueck
 
 
 def parse_version(text: str) -> tuple[int, int, int]:
@@ -107,10 +115,34 @@ def latest_release(update_settings: dict, fetch: Callable[[str, int], bytes] = d
     return UpdateInfo(version=tag.lstrip("v"), tag=tag, assets=assets, page=str(data.get("html_url", "")))
 
 
+def count_newer(update_settings: dict, current: str, fetch: Callable[[str, int], bytes] = default_fetch) -> int:
+    """Anzahl der veroeffentlichten Versionen (ohne Entwuerfe/Vorabversionen), die neuer sind als `current`; mindestens 1."""
+    repo = update_settings["repository"]
+    api = update_settings["api_url"].rstrip("/")
+    try:
+        data = json.loads(fetch(f"{api}/repos/{repo}/releases?per_page=100", 8 * 1024 * 1024).decode("utf-8"))
+        have = parse_version(current)
+        versions = set()
+        for release in data:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            version = parse_version(str(release["tag_name"]))
+            if version > have:
+                versions.add(version)
+        return max(1, len(versions))
+    except (UpdateError, ValueError, KeyError, TypeError, AttributeError):
+        return 1  # Liste nicht lesbar: die neueste Version ist jedenfalls eine neuere
+
+
 def check_for_update(update_settings: dict, current: str = __version__, fetch: Callable[[str, int], bytes] = default_fetch) -> UpdateInfo | None:
-    """Liefert die neuere Release oder None. Laedt nichts herunter."""
+    """Liefert die neuere Release oder None. Laedt nichts herunter. Setzt `behind` und `forced` (Pflichtupdate)."""
     info = latest_release(update_settings, fetch)
-    return info if parse_version(info.version) > parse_version(current) else None
+    if parse_version(info.version) <= parse_version(current):
+        return None
+    info.behind = count_newer(update_settings, current, fetch)
+    limit = int(update_settings.get("force_after_versions", DEFAULT_FORCE_AFTER) or 0)
+    info.forced = limit > 0 and info.behind > limit
+    return info
 
 
 def _cache_path() -> Path:
@@ -243,6 +275,36 @@ def install_update(
         raise
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def installed_dir() -> str | None:
+    """Ordner der installierten EXE; None beim Start aus dem Quellcode (dort gibt es nichts zu ersetzen)."""
+    import sys
+
+    return str(Path(sys.executable).parent) if getattr(sys, "frozen", False) else None
+
+
+def run_forced_update(config: cfgmod.Config, info: UpdateInfo | None, log: RunLog | None, *, install_dir: str | None = None, fetch: Callable[[str, int], bytes] = default_fetch, smoke_test: Callable[[str, str], None] | None = None) -> list[str] | None:
+    """Pflichtupdate: installiert ohne Rueckfrage, wenn `info.forced`. Liefert die ersetzten Dateien, None wenn nichts zu tun ist.
+
+    Es gelten alle Sicherungen der normalen Installation (HTTPS/Repository, Groesse, SHA-256, Probelauf, Rollback).
+    Bei einem Fehler bleibt die bisherige Installation unveraendert (UpdateError); der naechste Lauf versucht es erneut.
+    """
+    if info is None or not info.forced or not config.update["check_for_updates"]:
+        return None
+    folder = install_dir or installed_dir()
+    if folder is None:
+        if log:
+            log.warn(f"Pflichtupdate auf {info.version} faellig ({info.behind} Versionen zurueck), aber nur in der installierten EXE-Version moeglich.")
+        return None
+    if log:
+        log.warn(f"Pflichtupdate: Version {__version__} ist {info.behind} Versionen hinter {info.version} (Grenze: mehr als {config.update['force_after_versions']}); es wird ohne Rueckfrage installiert.")
+    try:
+        return install_update(info, folder, config.update, confirm=lambda update: True, fetch=fetch, smoke_test=smoke_test or _default_smoke_test, log=log)
+    except UpdateError as error:
+        if log:
+            log.error(f"Pflichtupdate auf {info.version} fehlgeschlagen (bisherige Installation unveraendert): {error}")
+        raise
 
 
 def rollback(install_dir: str) -> list[str]:

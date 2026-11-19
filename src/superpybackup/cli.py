@@ -91,13 +91,34 @@ def _backup_one(args: argparse.Namespace) -> int:
         try:
             log = _log(config, quiet=True)
             info = updater.periodic_check(config, log)
-            if info:
+            if info and _apply_forced_update(config, info, log, args.quiet):
+                pass
+            elif info:
                 _notify_new_version(config, info, log)
-            if info and not args.quiet:
+            if info and not info.forced and not args.quiet:
                 print(f"Neue Version verfuegbar: {info.version}. Installation mit 'update install'.")
         except Exception:  # noqa: BLE001 - die Update-Pruefung darf einen Lauf nie beeintraechtigen
             pass
     return result.exit_code
+
+
+def _apply_forced_update(config: cfgmod.Config, info: updater.UpdateInfo | None, log: RunLog | None, quiet: bool) -> bool:
+    """Pflichtupdate (mehr als update.force_after_versions Versionen zurueck): installiert ohne Rueckfrage. True = installiert."""
+    if info is None or not info.forced:
+        return False
+    try:
+        names = updater.run_forced_update(config, info, log)
+    except updater.UpdateError as error:
+        notifymod.notify(config.notifications, notifymod.ERROR, "Pflichtupdate fehlgeschlagen", f"Update auf {info.version} nicht installiert: {error}"[:300], log)
+        if not quiet:
+            print(f"Pflichtupdate auf {info.version} fehlgeschlagen (bisherige Installation unveraendert): {error}", file=sys.stderr)
+        return False
+    if not names:
+        return False
+    notifymod.notify(config.notifications, notifymod.UPDATE, "SuperPyBackup aktualisiert (Pflichtupdate)", f"Version {info.version} installiert (vorher {__version__}, {info.behind} Versionen zurueck). Bitte die Oberflaeche neu starten.", log)
+    if not quiet:
+        print(f"Pflichtupdate installiert: {', '.join(names)} -> Version {info.version}")
+    return True
 
 
 def _notify_new_version(config: cfgmod.Config, info: updater.UpdateInfo, log: RunLog | None) -> None:
@@ -440,13 +461,16 @@ def cmd_update(args: argparse.Namespace) -> int:
                     log.info(f"Updatepruefung: SuperPyBackup {__version__} ist aktuell.")
                 return 0
             if log:
-                log.info(f"Updatepruefung: neue Version {info.version} verfuegbar (installiert {__version__}).")
-            _notify_new_version(config, info, log)
+                log.info(f"Updatepruefung: neue Version {info.version} verfuegbar (installiert {__version__}, {info.behind} Version(en) zurueck).")
+            if not _apply_forced_update(config, info, log, True):
+                _notify_new_version(config, info, log)
             return 0
         if info is None:
             print(f"SuperPyBackup {__version__} ist aktuell.")
             return 0
         print(f"Neue Version verfuegbar: {info.version} (installiert: {__version__}) {info.page}")
+        if info.forced:
+            print(f"Hinweis: Die installierte Version ist {info.behind} Versionen alt (Grenze: mehr als {config.update['force_after_versions']}). Das Pflichtupdate wird bei der naechsten automatischen Pruefung ohne Rueckfrage installiert.")
         if args.action == "check":
             return 0
 
